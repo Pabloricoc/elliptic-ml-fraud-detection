@@ -1,0 +1,9 @@
+# Resolved development environment for Python 3.11 and 3.12.
+# Install with: python -m pip install -c constraints-dev.txt -e ".[dev]"
+colorama==0.4.6 ; sys_platform == "win32"
+iniconfig==2.3.1
+packaging==26.3
+pluggy==1.7.0
+pygments==2.21.0
+pytest==9.2.0
+ruff==0.17.6

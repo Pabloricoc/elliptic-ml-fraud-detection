@@ -1,0 +1,55 @@
+# Python environments, packaging and quality tools
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+/build/
+/dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+.ipynb_checkpoints/
+
+# Local configuration and credentials
+.env
+.env.*
+.kaggle/
+kaggle.json
+.aws/
+*.key
+*.pem
+
+# Keep data documentation, including future README files in raw/processed.
+/data/**
+!/data/**/
+!/data/**/README.md
+
+# Dataset exports, archives, trained models and experiment outputs
+*.csv
+*.parquet
+*.feather
+*.npy
+*.npz
+*.zip
+*.gz
+*.7z
+*.pkl
+*.pickle
+*.joblib
+*.ubj
+*.onnx
+*.pt
+*.pth
+/artifacts/
+/models/
+/mlruns/
+/mlartifacts/
+/mlflow.db
+
+# OS metadata
+.DS_Store
+Thumbs.db
