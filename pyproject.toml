@@ -9,9 +9,13 @@ description = "Tools for working with the Elliptic Bitcoin transaction dataset"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
+    "joblib>=1.4,<2",
     "matplotlib>=3.9,<4",
     "numpy>=2,<3",
     "pandas>=2.2,<3",
+    "scikit-learn>=1.7,<1.8",
+    "xgboost-cpu>=3.1,<3.2; (sys_platform == 'win32' or sys_platform == 'linux') and (platform_machine == 'AMD64' or platform_machine == 'x86_64')",
+    "xgboost>=3.1,<3.2; (sys_platform != 'win32' and sys_platform != 'linux') or (platform_machine != 'AMD64' and platform_machine != 'x86_64')",
 ]
 
 [project.optional-dependencies]
@@ -23,6 +27,7 @@ dev = [
 [project.scripts]
 elliptic-check-data = "elliptic_fraud.check_data:main"
 elliptic-data = "elliptic_fraud.data_cli:main"
+elliptic-train = "elliptic_fraud.train:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

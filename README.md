@@ -1,10 +1,10 @@
 # Elliptic ML Fraud Detection
 
-The goal of this portfolio project is to rank Bitcoin transactions for analyst review using the original Elliptic dataset. The intended prediction is whether a transaction carries Elliptic's illicit label. The evaluation will ask how many labelled illicit transactions an analyst could find with a limited review budget.
+This portfolio project ranks Bitcoin transactions for analyst review using the original Elliptic dataset. It tests whether the funding history observable at transaction confirmation helps find transactions that Elliptic labelled illicit, given a fixed review capacity.
 
 ## Current scope
 
-Phase 1 adds ingestion, validation and exploratory analysis for the original Elliptic CSVs. The package preserves every transaction and its source class, including `unknown`, and keeps directed edges in a separate table. The automated suite uses small generated CSVs. A local run on the full Elliptic dataset passed validation and produced an aggregate report covering all 49 time steps.
+The package validates the original CSVs, produces an aggregate exploratory report and trains two chronological baselines. A local data audit covered 203,769 transactions and 234,355 directed edges across all 49 time steps. Only 46,564 transactions have a known outcome. On the final ten steps, the selected XGBoost model achieved 0.0882 average precision on labelled transactions. A budget of 50 reviews per step captured 5 of 636 known illicit cases. [Experiment results and label coverage](docs/evaluation.md#recorded-local-result)
 
 ## Development setup
 
@@ -24,7 +24,7 @@ python3.11 -m venv .venv
 . .venv/bin/activate
 ```
 
-Install the package in editable mode and run the same checks as CI. The constraints file pins the data and development dependencies. The test suite runs offline on small generated inputs.
+Install the package in editable mode and run the same checks as CI. The constraints file pins the data, training and development dependencies. The test suite runs offline on small generated inputs.
 
 ```sh
 python -m pip install -c constraints-dev.txt -e ".[dev]"
@@ -70,9 +70,38 @@ edges = dataset.edges
 
 Proportions range from 0 to 1 in the tables. Undefined statistics appear as empty CSV cells or JSON `null`. The loader keeps the numeric feature matrix in memory, so allow RAM beyond the CSV parser's working space.
 
-## Planned architecture
+## Train and evaluate
 
-The offline pipeline will join transaction features and labels by transaction ID, retain the time step, and build chronological train, validation and test partitions. Verified features and a fitted model will produce a risk score used to order the review queue. Batch scoring and the eventual API will use the same preprocessing and model artifact. The [evaluation protocol](docs/evaluation.md) defines which transactions and features can support a performance claim.
+Run the fixed comparison from the repository root in PowerShell.
+
+```powershell
+.\.venv\Scripts\elliptic-train.exe --data-dir ".\data\raw" --output-dir ".\artifacts\models"
+```
+
+With an activated environment on any platform, `elliptic-train` uses these same defaults. If you know the Kaggle release version, pass it with `--dataset-version`. Each run fingerprints the three input files independently of that optional identifier.
+
+| Window | Steps | Use |
+| --- | --- | --- |
+| Train | 1–29 | Fit a scaled logistic regression and CPU XGBoost on labelled transactions. |
+| Validation | 30–39 | Select the model by illicit-class average precision (AP), then select its alert threshold by F1. |
+| Test | 40–49 | Evaluate the frozen model and threshold. Rank all transactions in each step for 50 review slots. |
+
+Both models use four features derived from the observed transactions that supplied a transaction's inputs. The anonymous release columns include aggregates with uncertain availability at confirmation. The feature allowlist, selection rules and assumptions about the sampled graph and label timing are in the [evaluation protocol](docs/evaluation.md).
+
+The command prints the path to a new local run in `artifacts/models/`.
+
+| File | Contents |
+| --- | --- |
+| `metrics.json` | Class counts and coverage per window, validation AP for both models, selected threshold, final AP, confusion counts and review totals. |
+| `test_by_step.csv` | Per-step queue size, confirmed illicit and licit hits, unlabelled reviews and recall of known illicit cases. |
+| `manifest.json` | Input and model hashes, software versions, feature definitions, split boundaries, seed, model settings and selection rules. |
+| `model.joblib` | The fitted winning pipeline. The manifest records its feature order and alert threshold. Load locally produced artifacts with the recorded dependency versions. |
+
+The supervised metrics describe the labelled subset. The fixed-budget queue includes unlabelled transactions, so its confirmed hits are a lower bound on the illicit transactions reviewed. Ranking takes place at the end of each time step. The selected threshold can be applied to individual scores as they become available.
+
+## Architecture
+
+`ingestion` and `validation` read the three source tables. `analysis` and `report` produce local aggregate diagnostics. For modelling, `model_features` partitions transactions and builds incoming-ancestry features. `train` fits and selects the model, and `model_evaluation` measures the operating point and the review queue. Batch inference and the planned API can consume the saved pipeline and feature definitions.
 
 ## Roadmap
 
@@ -80,6 +109,6 @@ The offline pipeline will join transaction features and labels by transaction ID
 | --- | --- | --- |
 | 0 · Bootstrap | Editable package, local file check, tests and CI configuration | Implemented |
 | 1 · Data | Load and validate the original schema, profile classes and directed edges, and generate local EDA reports | Validated on the full dataset |
-| 2 · Modelling | Compare a scikit-learn baseline with XGBoost on chronological partitions | Planned |
-| 3 · Risk and explanations | Set a review budget, evaluate ranking, explain scores with SHAP and record runs with MLflow | Planned |
+| 2 · Modelling | Compare logistic regression and XGBoost, evaluate a fixed review budget and save the selected pipeline | Trained and evaluated on the full release |
+| 3 · Risk and explanations | Add batch risk scoring, explanations with SHAP and experiment tracking with MLflow | Planned |
 | 4 · Serving | Package the selected model behind FastAPI, test inference and build a Docker image | Planned |
