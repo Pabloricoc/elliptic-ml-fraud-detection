@@ -5,11 +5,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-EXPECTED_FILES = (
-    "elliptic_txs_classes.csv",
-    "elliptic_txs_edgelist.csv",
-    "elliptic_txs_features.csv",
-)
+from .schema import EXPECTED_FILES, missing_files
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -30,7 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if not directory.is_dir():
             print(f"Expected a directory at {directory}.", file=sys.stderr)
             return 1
-        missing = [name for name in EXPECTED_FILES if not (directory / name).is_file()]
+        missing = missing_files(directory)
     except OSError as error:
         print(f"Could not inspect {directory}: {error}", file=sys.stderr)
         return 1

@@ -4,7 +4,7 @@ The goal of this portfolio project is to rank Bitcoin transactions for analyst r
 
 ## Current scope
 
-Phase 0 provides an installable Python package, a local dataset file check, pytest tests and a GitHub Actions workflow. Installation and tests run independently of the dataset. Training, model performance and inference are future milestones.
+Phase 1 adds ingestion, validation and exploratory analysis for the original Elliptic CSVs. The package preserves every transaction and its source class, including `unknown`, and keeps directed edges in a separate table. The automated suite uses small generated CSVs. A local run on the full Elliptic dataset passed validation and produced an aggregate report covering all 49 time steps.
 
 ## Development setup
 
@@ -24,7 +24,7 @@ python3.11 -m venv .venv
 . .venv/bin/activate
 ```
 
-Install the package in editable mode and run the same checks as CI. The constraints file pins the development tools and their dependencies.
+Install the package in editable mode and run the same checks as CI. The constraints file pins the data and development dependencies. The test suite runs offline on small generated inputs.
 
 ```sh
 python -m pip install -c constraints-dev.txt -e ".[dev]"
@@ -35,15 +35,40 @@ python -m pytest
 
 If PowerShell script execution is restricted, run the four commands above with `.\.venv\Scripts\python.exe` in place of `python`. CI runs on Ubuntu with Python 3.11 and Windows with Python 3.12.
 
-## Optional local file check
+## Run the data pipeline
 
-With the environment active, run `elliptic-check-data` from the repository root to inspect `data/raw/`, or pass the directory containing the three original CSVs. Quote paths containing spaces.
+Place the three original CSVs together in `data/raw/` or pass the directory that directly contains them with `--data-dir`. The package reads the local files in place. Filenames, schemas, licensing and the source of the format are in the [dataset guide](data/README.md).
 
-```sh
-elliptic-check-data "path/to/elliptic_bitcoin_dataset"
+```powershell
+.\.venv\Scripts\elliptic-data.exe validate --data-dir ".\data\raw"
+.\.venv\Scripts\elliptic-data.exe analyze --data-dir ".\data\raw" --output-dir ".\artifacts\eda"
 ```
 
-Exit code `0` means all expected names refer to regular files. Exit code `1` identifies a directory or file layout problem. The check inspects filesystem metadata only. File roles and access terms are in the [dataset guide](data/README.md).
+With an activated environment on any platform, the commands are `elliptic-data validate` and `elliptic-data analyze`. Both default to `data/raw/`. The phase 0 command `elliptic-check-data [directory]` remains available for a quick filename check.
+
+Validation checks file structure, numeric values, time steps, exact one-to-one label coverage by ID, and edge endpoints within the same time step. A blocking error exits with code `1`. Statistical warnings, including constant features, incomplete periods or duplicate edge rows, accompany a successful exit (`0`). Observations are preserved. In Python, `load_dataset` performs the same ingestion and checks.
+
+```python
+from pathlib import Path
+from elliptic_fraud.ingestion import load_dataset
+
+dataset = load_dataset(Path("data/raw"))
+transactions = dataset.transactions
+edges = dataset.edges
+```
+
+### Read the EDA report
+
+`analyze` prints a new run directory under `artifacts/eda/` by default. Each completed run contains aggregate outputs and stays outside version control.
+
+| File | Interpretation |
+| --- | --- |
+| `summary.json` | Table shapes as [rows, columns], all three class counts, unknown fraction, shares among known labels, constant feature names and warnings. Graph counts include isolated nodes, repeated edge rows and self-loops. Degrees count directed edge rows as supplied. |
+| `time_steps.csv` | One row for each of the 49 release time steps. Label coverage divides labelled transactions by all transactions in the step. Illicit share divides illicit by labelled transactions. Empty periods have zero counts. |
+| `features.csv` | One row per anonymous feature with count, mean, sample standard deviation, quartiles and range. Quantiles describe the full input supplied to the command. |
+| `timeline.png` | Transaction volume, known class counts, label coverage and illicit share on a common time axis. Gaps indicate undefined proportions. |
+
+Proportions range from 0 to 1 in the tables. Undefined statistics appear as empty CSV cells or JSON `null`. The loader keeps the numeric feature matrix in memory, so allow RAM beyond the CSV parser's working space.
 
 ## Planned architecture
 
@@ -54,7 +79,7 @@ The offline pipeline will join transaction features and labels by transaction ID
 | Phase | Deliverable | Status |
 | --- | --- | --- |
 | 0 · Bootstrap | Editable package, local file check, tests and CI configuration | Implemented |
-| 1 · Data | Validate schemas, keys, labels and time steps with pandas and NumPy | Planned |
+| 1 · Data | Load and validate the original schema, profile classes and directed edges, and generate local EDA reports | Validated on the full dataset |
 | 2 · Modelling | Compare a scikit-learn baseline with XGBoost on chronological partitions | Planned |
 | 3 · Risk and explanations | Set a review budget, evaluate ranking, explain scores with SHAP and record runs with MLflow | Planned |
 | 4 · Serving | Package the selected model behind FastAPI, test inference and build a Docker image | Planned |

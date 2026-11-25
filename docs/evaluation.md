@@ -2,6 +2,12 @@
 
 This is the design for the first modelling experiment. The prediction unit is a transaction at its scoring time. Keep its identifier for joins and auditing, and its time step for partitioning.
 
+## Phase 1 handoff
+
+The loader returns `transactions` with `tx_id`, `time_step`, 165 anonymous numeric columns and the original `class`. The separate `edges` table contains `source_id` and `target_id`. Preserve `tx_id` as a join key and `class` as the target. Use an explicit, time-audited list of predictors when building the baseline.
+
+Full-input counts, quantiles and graph summaries are descriptive audit outputs. Make feature-selection, preprocessing and tuning decisions within the appropriate chronological windows. Even neighbours from the same release time step can represent spending that occurred after the prediction instant.
+
 ## Labels and time
 
 - Preserve all three source labels during ingestion. Use illicit as the positive class and licit as the negative class. Keep `unknown` unlabelled and exclude it from supervised fitting and ground-truth metrics. Report label coverage by period.
