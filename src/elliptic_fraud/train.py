@@ -1,8 +1,6 @@
 """Train two temporal baselines and evaluate the validation-selected model."""
 
 import argparse
-import hashlib
-import json
 import platform
 import sys
 from collections.abc import Sequence
@@ -26,7 +24,14 @@ from .model_evaluation import (
     validation_threshold,
 )
 from .model_features import FEATURE_AUDIT, WINDOWS, Window, build_window
-from .runs import new_run
+from .runs import (
+    file_digest,
+    file_state,
+    implementation_digest,
+    new_run,
+    snapshot_digest,
+    write_json,
+)
 from .schema import EXPECTED_FILES, DatasetError, missing_files
 
 SEED = 42
@@ -108,26 +113,6 @@ def fit_and_select(train: Window, validation: Window) -> Selection:
     )
 
 
-def _digest(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def _snapshot(files: dict[str, str]) -> str:
-    return hashlib.sha256(json.dumps(files, sort_keys=True).encode("utf-8")).hexdigest()
-
-
-def _file_state(paths: list[Path]) -> list[tuple[int, int]]:
-    stats = (path.stat() for path in paths)
-    return [(stat.st_size, stat.st_mtime_ns) for stat in stats]
-
-
-def _write_json(path: Path, values: dict) -> None:
-    path.write_text(
-        json.dumps(values, indent=2, allow_nan=False) + "\n", encoding="utf-8"
-    )
-
-
 def run_training(
     data_dir: Path,
     output_dir: Path,
@@ -146,10 +131,10 @@ def run_training(
     if missing:
         raise DatasetError(f"Missing input files in {data_dir}: {', '.join(missing)}.")
     paths = [data_dir / name for name in EXPECTED_FILES]
-    before = _file_state(paths)
+    before = file_state(paths)
     dataset = load_dataset(data_dir)
-    fingerprints = {path.name: _digest(path) for path in paths}
-    if before != _file_state(paths):
+    fingerprints = {path.name: file_digest(path) for path in paths}
+    if before != file_state(paths):
         raise DatasetError("An input file changed during ingestion or fingerprinting.")
     train = build_window(dataset, *WINDOWS["train"])
     validation = build_window(dataset, *WINDOWS["validation"])
@@ -187,7 +172,7 @@ def run_training(
         artifact = staging / "model.joblib"
         joblib.dump(selection.model, artifact, compress=3)
         by_step.to_csv(staging / "test_by_step.csv")
-        _write_json(staging / "metrics.json", metrics)
+        write_json(staging / "metrics.json", metrics)
         versions = {
             name: version(name)
             for name in (
@@ -200,7 +185,7 @@ def run_training(
                 "threadpoolctl",
             )
         }
-        _write_json(
+        write_json(
             staging / "manifest.json",
             {
                 "created_utc": datetime.now(UTC).isoformat(),
@@ -209,14 +194,9 @@ def run_training(
                     "release": "Original Elliptic transaction graph",
                     "kaggle_version": dataset_version,
                     "files_sha256": fingerprints,
-                    "snapshot_sha256": _snapshot(fingerprints),
+                    "snapshot_sha256": snapshot_digest(fingerprints),
                 },
-                "implementation_sha256": _snapshot(
-                    {
-                        path.name: _digest(path)
-                        for path in Path(__file__).parent.glob("*.py")
-                    }
-                ),
+                "implementation_sha256": implementation_digest(),
                 "environment": {
                     "python": platform.python_version(),
                     "platform": platform.platform(),
@@ -242,7 +222,7 @@ def run_training(
                 "threshold": selection.threshold,
                 "review_budget_per_step": budget_per_step,
                 "ranking": "Descending illicit score, then ascending SHA256 of ASCII seed|tx_id.",
-                "model_sha256": _digest(artifact),
+                "model_sha256": file_digest(artifact),
             },
         )
     return destination

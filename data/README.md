@@ -20,6 +20,8 @@ The loader first streams each file to verify UTF-8, quoting, field counts and th
 
 Keep original files in `data/raw/` and future derived tables in `data/processed/`. Both locations are ignored by Git except for README files. Keep records, archives and extracted samples out of version control, published artifacts and CI logs.
 
+Batch inference reads the transaction and edge files independently of labels. The generated score table and analyst queue contain individual transaction records and belong in local, ignored storage. MLflow receives the aggregate summaries. [Scoring outputs](../docs/scoring.md)
+
 ## Licence and provenance
 
 On 22 November 2026, Kaggle's metadata for `ellipticco/elliptic-data-set` listed **CC BY-NC-ND 4.0**. Verify the current terms before using a local copy. This licence applies to the dataset independently of any licence chosen for the project code. [Elliptic's Kaggle listing](https://www.kaggle.com/datasets/ellipticco/elliptic-data-set) · [Creative Commons licence deed](https://creativecommons.org/licenses/by-nc-nd/4.0/)

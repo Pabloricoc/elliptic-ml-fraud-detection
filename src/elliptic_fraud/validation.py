@@ -36,13 +36,8 @@ def validate_tables(
         raise DatasetError(
             "The feature and class tables must both contain transactions."
         )
-    _check_ids(features["tx_id"], FEATURES_FILE, unique=True)
+    validate_graph(features, edges)
     _check_ids(classes["tx_id"], CLASSES_FILE, unique=True)
-
-    if not features["time_step"].isin([str(step) for step in TIME_STEPS]).all():
-        raise DatasetError(
-            f"{FEATURES_FILE}: time_step must be an integer from 1 to 49."
-        )
     for name in FEATURE_COLUMNS:
         column = features[name]
         if (
@@ -63,6 +58,16 @@ def validate_tables(
             f"{extra} class rows lack a feature row."
         )
 
+
+def validate_graph(features: pd.DataFrame, edges: pd.DataFrame) -> None:
+    """Check transaction keys and the release's disjoint time-step graphs."""
+    if features.empty:
+        raise DatasetError("The feature table must contain transactions.")
+    _check_ids(features["tx_id"], FEATURES_FILE, unique=True)
+    if not features["time_step"].isin([str(step) for step in TIME_STEPS]).all():
+        raise DatasetError(
+            f"{FEATURES_FILE}: time_step must be an integer from 1 to 49."
+        )
     for name in ("source_id", "target_id"):
         _check_ids(edges[name], EDGES_FILE)
     steps = features[["tx_id", "time_step"]].set_index("tx_id")["time_step"]

@@ -52,23 +52,30 @@ def at_threshold(
     }
 
 
+def rank_transactions(steps: pd.Series, scores: pd.Series, seed: int) -> pd.DataFrame:
+    """Rank descending within each step, using the original deterministic tie rule."""
+    ranked = pd.DataFrame({"time_step": steps, "risk_score": scores.loc[steps.index]})
+    ranked["tie"] = [
+        hashlib.sha256(f"{seed}|{tx_id}".encode("ascii")).digest()
+        for tx_id in ranked.index
+    ]
+    ranked = ranked.sort_values(
+        ["time_step", "risk_score", "tie"], ascending=[True, False, True]
+    )
+    ranked["review_rank"] = ranked.groupby("time_step").cumcount() + 1
+    return ranked.drop(columns="tie")
+
+
 def review_queue(
     window: Window, scores: pd.Series, budget: int, seed: int
 ) -> tuple[dict[str, int | float | None], pd.DataFrame]:
     """Rank all transactions before looking up outcomes. Export step aggregates only."""
     if budget < 1:
         raise ValueError("Review budget must be positive.")
-    ranked = pd.DataFrame(
-        {"step": window.steps, "score": scores.loc[window.steps.index]}
-    )
-    ranked["tie"] = [
-        hashlib.sha256(f"{seed}|{tx_id}".encode("ascii")).digest()
-        for tx_id in ranked.index
-    ]
-    ranked = ranked.sort_values(["step", "score", "tie"], ascending=[True, False, True])
+    ranked = rank_transactions(window.steps, scores, seed)
     rows = []
     for step in range(window.first, window.last + 1):
-        candidates = ranked.index[ranked["step"].eq(step)]
+        candidates = ranked.index[ranked["time_step"].eq(step)]
         outcomes = window.labels.loc[candidates]
         reviewed = outcomes.iloc[:budget]
         rows.append(

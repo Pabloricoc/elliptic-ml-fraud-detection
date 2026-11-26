@@ -80,14 +80,22 @@ def ancestry_features(ids: pd.Index, edges: pd.DataFrame) -> pd.DataFrame:
     ).reindex(ids)
 
 
-def build_window(dataset: EllipticDataset, first: int, last: int) -> Window:
-    """Select whole steps before feature construction. Preserve unknowns in the graph."""
+def scoring_features(
+    dataset: EllipticDataset, first: int, last: int
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Select complete steps and build ancestry with no dependency on outcomes."""
     tx = dataset.transactions
     selected = tx.loc[
-        tx["time_step"].between(first, last), ["tx_id", "class", "time_step"]
-    ].set_index("tx_id")
+        tx["time_step"].between(first, last), ["tx_id", "time_step"]
+    ].set_index("tx_id")["time_step"]
     if selected.empty:
         raise DatasetError(f"No eligible transactions in time steps {first}–{last}.")
     edges = dataset.edges.loc[dataset.edges["target_id"].isin(selected.index)]
-    features = ancestry_features(selected.index, edges)
-    return Window(features, selected["class"], selected["time_step"], first, last)
+    return ancestry_features(selected.index, edges), selected
+
+
+def build_window(dataset: EllipticDataset, first: int, last: int) -> Window:
+    """Attach outcomes after computing the predictors for a complete window."""
+    features, steps = scoring_features(dataset, first, last)
+    labels = dataset.transactions[["tx_id", "class"]].set_index("tx_id")["class"]
+    return Window(features, labels.loc[features.index], steps, first, last)

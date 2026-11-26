@@ -4,7 +4,9 @@ This portfolio project ranks Bitcoin transactions for analyst review using the o
 
 ## Current scope
 
-The package validates the original CSVs, produces an aggregate exploratory report and trains two chronological baselines. A local data audit covered 203,769 transactions and 234,355 directed edges across all 49 time steps. Only 46,564 transactions have a known outcome. On the final ten steps, the selected XGBoost model achieved 0.0882 average precision on labelled transactions. A budget of 50 reviews per step captured 5 of 636 known illicit cases. [Experiment results and label coverage](docs/evaluation.md#recorded-local-result)
+The package validates the original CSVs, produces an aggregate exploratory report, trains two chronological baselines and scores unlabelled batches with the selected model. Analysts can inspect the review queue and its SHAP explanations locally. MLflow records the experiment settings, evaluation and aggregate explanations.
+
+A local data audit covered 203,769 transactions and 234,355 directed edges across all 49 time steps. Only 46,564 transactions have a known outcome. On the final ten steps, the selected XGBoost model achieved 0.0882 average precision on labelled transactions. A budget of 50 reviews per step captured 5 of 636 known illicit cases. [Experiment results and label coverage](docs/evaluation.md#recorded-local-result)
 
 ## Development setup
 
@@ -99,9 +101,23 @@ The command prints the path to a new local run in `artifacts/models/`.
 
 The supervised metrics describe the labelled subset. The fixed-budget queue includes unlabelled transactions, so its confirmed hits are a lower bound on the illicit transactions reviewed. Ranking takes place at the end of each time step. The selected threshold can be applied to individual scores as they become available.
 
+## Score and explain a batch
+
+Use the model directory printed by `elliptic-train`. The scoring command prints the batch directory to use for tracking. With the virtual environment active, replace the example paths with your local run paths.
+
+```powershell
+$modelRun = "artifacts/models/model-<run-id>"
+elliptic-score --model-run $modelRun --data-dir data/raw --first-step 40 --last-step 49
+$scoreRun = "artifacts/scores/score-<run-id>"
+elliptic-track --model-run $modelRun --score-run $scoreRun
+mlflow server --backend-store-uri sqlite:///artifacts/tracking/mlflow.db --host 127.0.0.1 --port 5000
+```
+
+Open `http://127.0.0.1:5000` to browse the local experiment. The batch directory holds the private transaction scores and review queue. The tracker imports aggregate results and can also record an existing training run on its own. [Batch inputs, outputs and SHAP interpretation](docs/scoring.md)
+
 ## Architecture
 
-`ingestion` and `validation` read the three source tables. `analysis` and `report` produce local aggregate diagnostics. For modelling, `model_features` partitions transactions and builds incoming-ancestry features. `train` fits and selects the model, and `model_evaluation` measures the operating point and the review queue. Batch inference and the planned API can consume the saved pipeline and feature definitions.
+`ingestion` and `validation` read the source tables. `analysis` and `report` produce local diagnostics. `model_features` and `model_evaluation` provide the same predictors and ranking policy to training and scoring. `scoring` uses the saved pipeline and `explanations` computes its feature contributions. `tracking` imports completed runs into a local SQLite-backed MLflow experiment.
 
 ## Roadmap
 
@@ -110,5 +126,5 @@ The supervised metrics describe the labelled subset. The fixed-budget queue incl
 | 0 · Bootstrap | Editable package, local file check, tests and CI configuration | Implemented |
 | 1 · Data | Load and validate the original schema, profile classes and directed edges, and generate local EDA reports | Validated on the full dataset |
 | 2 · Modelling | Compare logistic regression and XGBoost, evaluate a fixed review budget and save the selected pipeline | Trained and evaluated on the full release |
-| 3 · Risk and explanations | Add batch risk scoring, explanations with SHAP and experiment tracking with MLflow | Planned |
+| 3 · Risk and explanations | Batch scoring, per-transaction SHAP explanations for the review queue and local MLflow tracking | Implemented |
 | 4 · Serving | Package the selected model behind FastAPI, test inference and build a Docker image | Planned |

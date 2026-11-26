@@ -21,7 +21,7 @@ from .schema import (
     DatasetError,
     missing_files,
 )
-from .validation import validate_tables
+from .validation import validate_graph, validate_tables
 
 
 @dataclass
@@ -41,12 +41,16 @@ def _text_lines(stream: Iterable[str], file: str) -> Iterator[str]:
 
 
 def _read_csv(
-    path: Path, columns: tuple[str, ...], header: tuple[str, ...] | None
+    path: Path,
+    columns: tuple[str, ...],
+    header: tuple[str, ...] | None,
+    *,
+    usecols: list[int] | None = None,
 ) -> pd.DataFrame:
     # Text keys preserve leading zeros and identifiers beyond floating-point precision.
+    selected = list(range(len(columns))) if usecols is None else usecols
     dtypes = {
-        i: "float64" if name in FEATURE_COLUMNS else "string"
-        for i, name in enumerate(columns)
+        i: "float64" if columns[i] in FEATURE_COLUMNS else "string" for i in selected
     }
     try:
         with path.open(encoding="utf-8-sig", newline="") as stream:
@@ -56,7 +60,7 @@ def _read_csv(
             first = next(reader, None)
             if first is None:
                 return pd.DataFrame(
-                    {name: pd.Series(dtype=dtypes[i]) for i, name in enumerate(columns)}
+                    {columns[i]: pd.Series(dtype=dtypes[i]) for i in selected}
                 )
             if (
                 header is None
@@ -80,6 +84,7 @@ def _read_csv(
                 header=None,
                 skiprows=int(header is not None),
                 dtype=dtypes,
+                usecols=usecols,
                 skip_blank_lines=False,
                 float_precision="round_trip",
             )
@@ -99,10 +104,19 @@ def _read_csv(
             f"{path.name}: invalid value during typed CSV parsing. "
             "Numeric feature fields must contain finite numbers."
         ) from None
-    if frame.shape[1] != len(columns):
+    if frame.shape[1] != len(selected):
         raise DatasetError(f"{path.name}: expected {len(columns)} fields per row.")
-    frame.columns = list(columns)
+    frame.columns = [columns[i] for i in selected]
     return frame
+
+
+def load_scoring_graph(directory: Path) -> EllipticDataset:
+    """Read transaction IDs, time steps and edges without opening the class table."""
+    nodes = _read_csv(directory / FEATURES_FILE, FEATURE_SCHEMA, None, usecols=[0, 1])
+    edges = _read_csv(directory / EDGES_FILE, EDGE_SCHEMA, ("txId1", "txId2"))
+    validate_graph(nodes, edges)
+    nodes["time_step"] = nodes["time_step"].astype(np.uint8)
+    return EllipticDataset(nodes, edges)
 
 
 def load_dataset(directory: Path = Path("data/raw")) -> EllipticDataset:

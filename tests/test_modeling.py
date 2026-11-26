@@ -1,4 +1,3 @@
-import csv
 import hashlib
 import json
 import shutil
@@ -27,24 +26,8 @@ from elliptic_fraud.model_features import (
     ancestry_features,
     build_window,
 )
-from elliptic_fraud.schema import CLASSES_FILE, EDGES_FILE, FEATURES_FILE, DatasetError
+from elliptic_fraud.schema import CLASSES_FILE, FEATURES_FILE, DatasetError
 from elliptic_fraud.train import fit_and_select, main, predict_scores
-
-
-@pytest.fixture
-def periods() -> EllipticDataset:
-    # Stand-alone invented graphs straddle every split boundary.
-    rows, edges = [], []
-    for step in (1, 29, 30, 39, 40, 49):
-        a, b, c, d = [f"000000{step:02}{i}" for i in range(4)]
-        rows.extend(
-            [(a, step, "unknown"), (b, step, "2"), (c, step, "1"), (d, step, "2")]
-        )
-        edges.extend([(a, b), (b, c), (d, c)])
-    return EllipticDataset(
-        pd.DataFrame(rows, columns=["tx_id", "time_step", "class"]),
-        pd.DataFrame(edges, columns=["source_id", "target_id"]),
-    )
 
 
 def test_whole_steps_ancestry_and_label_isolation(periods: EllipticDataset) -> None:
@@ -173,21 +156,6 @@ def test_queue_ranks_unknowns_and_handles_empty_steps_and_ties(
         assert ranked.loc[step, "confirmed_illicit"] == int(
             window.labels.loc[first_tie] == "1"
         )
-
-
-@pytest.fixture
-def model_input(tmp_path: Path, periods: EllipticDataset) -> Path:
-    directory = tmp_path / "invented inputs"
-    directory.mkdir()
-    with (directory / FEATURES_FILE).open("w", newline="") as stream:
-        writer = csv.writer(stream)
-        for row in periods.transactions.itertuples(index=False, name=None):
-            writer.writerow([row[0], row[1], *range(165)])
-    periods.transactions[["tx_id", "class"]].to_csv(
-        directory / CLASSES_FILE, header=["txId", "class"], index=False
-    )
-    periods.edges.to_csv(directory / EDGES_FILE, header=["txId1", "txId2"], index=False)
-    return directory
 
 
 def test_installed_training_cli_persists_the_selected_model_and_aggregate_run(
