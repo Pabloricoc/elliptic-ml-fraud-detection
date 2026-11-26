@@ -1,32 +1,67 @@
-# Elliptic ML Fraud Detection
+![Elliptic ML Fraud Detection — Bitcoin transaction risk, from temporal evaluation to local inference](docs/assets/elliptic-banner.svg)
 
-This portfolio project ranks Bitcoin transactions for analyst review using the original Elliptic dataset. It tests whether the funding history observable at transaction confirmation helps find transactions that Elliptic labelled illicit, given a fixed review capacity.
+[![Quality checks on main](https://github.com/Pabloricoc/elliptic-ml-fraud-detection/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Pabloricoc/elliptic-ml-fraud-detection/actions/workflows/ci.yml)
+[![Python 3.11 and 3.12](https://img.shields.io/badge/Python-3.11%20%7C%203.12-365d8d?logo=python&logoColor=white)](#reproduce-the-pipeline)
 
-## Current scope
+**An end-to-end ML engineering project for prioritising Bitcoin transactions for analyst review.** It validates the Elliptic graph, builds features from observed funding history, compares models on chronological windows and serves the selected pipeline through a local API. Batch scores feed a capacity-limited review queue with SHAP explanations.
 
-The package validates the original CSVs, produces an aggregate exploratory report, trains two chronological baselines and scores unlabelled batches with the selected model. Analysts can inspect the review queue and its SHAP explanations locally. MLflow records the experiment settings, evaluation and aggregate explanations. A FastAPI service can score a transaction on demand with the same saved pipeline and threshold.
+[Results](#results) · [Architecture](#architecture) · [Dataset](#dataset) · [Reproduce](#reproduce-the-pipeline) · [API demo](#serve-the-model) · [Limitations](#limitations)
 
-A local data audit covered 203,769 transactions and 234,355 directed edges across all 49 time steps. Only 46,564 transactions have a known outcome. On the final ten steps, the selected XGBoost model achieved 0.0882 average precision on labelled transactions. A budget of 50 reviews per step captured 5 of 636 known illicit cases. [Experiment results and label coverage](docs/evaluation.md#recorded-local-result)
+| Transactions | Directed funding edges | Time steps | Known labels |
+| ---: | ---: | ---: | ---: |
+| **203,769** | **234,355** | **49** | **46,564** (22.85%) |
 
-## Development setup
+## Results
 
-Use Python 3.11 to match the reference CI job. Python 3.12 is also supported. Start in the repository root.
+**XGBoost reached 0.0882 average precision on the labelled test subset**, compared with 0.0569 for a constant-score reference. At 50 reviews per time step, the queue captured **5 of 636 known illicit transactions** (0.79%). The two results measure different things. Average precision measures ranking on known labels. The review budget applies to the full eligible batch.
 
-**Windows PowerShell**
+| Candidate | Validation AP · steps 30–39 | Test AP · steps 40–49 |
+| --- | ---: | ---: |
+| Standardised logistic regression | 0.1370 | — |
+| **CPU XGBoost** | **0.2025** | **0.0882** |
 
-```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
+Validation AP selected XGBoost for the test window. The validation-selected threshold of **0.168804** (rounded) yielded **9.23% precision** and **51.57% recall** over 11,184 test transactions with known labels. The held-out queue selected 500 of 46,647 eligible transactions, including 456 with unknown outcomes. The overall precision of that queue remains undetermined. [Split, label policy and full results](docs/evaluation.md#recorded-local-result)
+
+![Stacked bars for ten test steps with 50 reviews each. Across 500 slots, 5 are known illicit, 39 known licit and 456 unlabelled.](docs/assets/review-queue.png)
+
+Across all 46,647 scored transactions, **observed parent count** had the largest mean absolute SHAP contribution at **0.491 log-odds**. Each queued transaction also gets its four signed contributions. The scoring command checks that the base value and the contributions reconstruct the model score. [Explanation methodology and recorded batch](docs/scoring.md#recorded-replay)
+
+![Mean absolute SHAP contributions in log-odds: observed parent count 0.491, ancestor depth 0.134, maximum parent indegree 0.043 and mean parent indegree 0.013.](docs/assets/shap-importance.png)
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A["Elliptic CSVs<br/>Schema and edge checks"] --> B["Temporal split<br/>Funding ancestry features"]
+    B --> C["Logistic regression<br/>and CPU XGBoost"]
+    C --> D["Frozen model<br/>and validation threshold"]
+    D --> E["Batch ranking<br/>and SHAP"]
+    D --> F["FastAPI scoring<br/>in Docker"]
+    E --> G["Local MLflow<br/>aggregate tracking"]
+    C --> G
 ```
 
-**Linux or macOS**
+- **Data engineering.** Parse the headerless CSV, preserve exact transaction IDs, validate the class join and check that each funding edge stays in its own time step.
+- **Graph features and temporal validation.** Split by complete time steps before modelling. At confirmation, derive four features from incoming funding ancestry. Fit on steps 1–29, select the model and threshold on 30–39, then evaluate on 40–49.
+- **Reproducible scoring.** Use the same feature builder, verified model artifact and saved threshold in the batch job and API. Keep the review budget separate from the threshold decision.
+- **MLOps and quality.** Fingerprint the input CSVs and fitted model, track aggregate reports with MLflow and check parity between API and batch scores. GitHub Actions tests synthetic inputs on Ubuntu, Windows and in a Docker HTTP smoke test.
 
-```sh
-python3.11 -m venv .venv
-. .venv/bin/activate
-```
+## Dataset
 
-Install the package in editable mode and run the same checks as CI. The constraints file pins the data, training and development dependencies. The test suite runs offline on small generated inputs.
+The original Elliptic release contains **4,545 known illicit**, **42,019 known licit** and **157,205 unlabelled** transactions. Unlabelled transactions can supply graph context and enter the review queue. Supervised fitting and evaluation use the known labels.
+
+![Transaction volume and known-label coverage across all 49 time steps, with the training, validation and test windows marked.](docs/assets/temporal-coverage.png)
+
+The graph features use observed parent count, mean and maximum parent indegree, and observed ancestor depth. The 165 anonymous release columns include neighbourhood aggregates whose availability at confirmation is uncertain. The feature allowlist uses incoming ancestry so downstream spending leaves an earlier score unchanged. [Dataset provenance and access terms](data/README.md) · [Feature policy](docs/evaluation.md#phase-2-experiment)
+
+## Reproduce the pipeline
+
+Use Python **3.11 or 3.12**. Run these commands from the repository root.
+
+| Environment | Create and activate a virtual environment |
+| --- | --- |
+| Windows PowerShell | `py -3.11 -m venv .venv` then `.\.venv\Scripts\Activate.ps1` |
+| Linux or macOS | `python3.11 -m venv .venv` then `. .venv/bin/activate` |
 
 ```sh
 python -m pip install -c constraints-dev.txt -e ".[dev]"
@@ -35,100 +70,100 @@ python -m ruff format --check .
 python -m pytest
 ```
 
-If PowerShell script execution is restricted, run the four commands above with `.\.venv\Scripts\python.exe` in place of `python`. CI runs on Ubuntu with Python 3.11 and Windows with Python 3.12.
+The quality checks use synthetic inputs and run without the dataset. On Windows with activation restricted, invoke `.\.venv\Scripts\python.exe` and the CLI executables under `.\.venv\Scripts\` directly.
 
-## Run the data pipeline
+### Audit, train and track
 
-Place the three original CSVs together in `data/raw/` or pass the directory that directly contains them with `--data-dir`. The package reads the local files in place. Filenames, schemas, licensing and the source of the format are in the [dataset guide](data/README.md).
+Place the three original CSVs in `data/raw/`, following the [dataset guide](data/README.md). Use `--data-dir` to select a different local directory.
 
-```powershell
-.\.venv\Scripts\elliptic-data.exe validate --data-dir ".\data\raw"
-.\.venv\Scripts\elliptic-data.exe analyze --data-dir ".\data\raw" --output-dir ".\artifacts\eda"
+```sh
+elliptic-data validate
+elliptic-data analyze
+elliptic-train
 ```
 
-With an activated environment on any platform, the commands are `elliptic-data validate` and `elliptic-data analyze`. Both default to `data/raw/`. The phase 0 command `elliptic-check-data [directory]` remains available for a quick filename check.
+The EDA run writes class, feature and time-step summaries. Training writes the selected model, metrics, per-step queue counts and manifest to a new directory under `artifacts/models/`. Use that output path as `model-<run-id>`. Scoring prints a second run path under `artifacts/scores/`.
 
-Validation checks file structure, numeric values, time steps, exact one-to-one label coverage by ID, and edge endpoints within the same time step. A blocking error exits with code `1`. Statistical warnings, including constant features, incomplete periods or duplicate edge rows, accompany a successful exit (`0`). Observations are preserved. In Python, `load_dataset` performs the same ingestion and checks.
-
-```python
-from pathlib import Path
-from elliptic_fraud.ingestion import load_dataset
-
-dataset = load_dataset(Path("data/raw"))
-transactions = dataset.transactions
-edges = dataset.edges
-```
-
-### Read the EDA report
-
-`analyze` prints a new run directory under `artifacts/eda/` by default. Each completed run contains aggregate outputs and stays outside version control.
-
-| File | Interpretation |
-| --- | --- |
-| `summary.json` | Table shapes as [rows, columns], all three class counts, unknown fraction, shares among known labels, constant feature names and warnings. Graph counts include isolated nodes, repeated edge rows and self-loops. Degrees count directed edge rows as supplied. |
-| `time_steps.csv` | One row for each of the 49 release time steps. Label coverage divides labelled transactions by all transactions in the step. Illicit share divides illicit by labelled transactions. Empty periods have zero counts. |
-| `features.csv` | One row per anonymous feature with count, mean, sample standard deviation, quartiles and range. Quantiles describe the full input supplied to the command. |
-| `timeline.png` | Transaction volume, known class counts, label coverage and illicit share on a common time axis. Gaps indicate undefined proportions. |
-
-Proportions range from 0 to 1 in the tables. Undefined statistics appear as empty CSV cells or JSON `null`. The loader keeps the numeric feature matrix in memory, so allow RAM beyond the CSV parser's working space.
-
-## Train and evaluate
-
-Run the fixed comparison from the repository root in PowerShell.
-
-```powershell
-.\.venv\Scripts\elliptic-train.exe --data-dir ".\data\raw" --output-dir ".\artifacts\models"
-```
-
-With an activated environment on any platform, `elliptic-train` uses these same defaults. If you know the Kaggle release version, pass it with `--dataset-version`. Each run fingerprints the three input files independently of that optional identifier.
-
-| Window | Steps | Use |
-| --- | --- | --- |
-| Train | 1–29 | Fit a scaled logistic regression and CPU XGBoost on labelled transactions. |
-| Validation | 30–39 | Select the model by illicit-class average precision (AP), then select its alert threshold by F1. |
-| Test | 40–49 | Evaluate the frozen model and threshold. Rank all transactions in each step for 50 review slots. |
-
-Both models use four features derived from the observed transactions that supplied a transaction's inputs. The anonymous release columns include aggregates with uncertain availability at confirmation. The feature allowlist, selection rules and assumptions about the sampled graph and label timing are in the [evaluation protocol](docs/evaluation.md).
-
-The command prints the path to a new local run in `artifacts/models/`.
-
-| File | Contents |
-| --- | --- |
-| `metrics.json` | Class counts and coverage per window, validation AP for both models, selected threshold, final AP, confusion counts and review totals. |
-| `test_by_step.csv` | Per-step queue size, confirmed illicit and licit hits, unlabelled reviews and recall of known illicit cases. |
-| `manifest.json` | Input and model hashes, software versions, feature definitions, split boundaries, seed, model settings and selection rules. |
-| `model.joblib` | The fitted winning pipeline. The manifest records its feature order and alert threshold. Load locally produced artifacts with the recorded dependency versions. |
-
-The supervised metrics describe the labelled subset. The fixed-budget queue includes unlabelled transactions, so its confirmed hits are a lower bound on the illicit transactions reviewed. Ranking takes place at the end of each time step. The selected threshold can be applied to individual scores as they become available.
-
-## Score and explain a batch
-
-Use the model directory printed by `elliptic-train`. The scoring command prints the batch directory to use for tracking. With the virtual environment active, replace the example paths with your local run paths.
-
-```powershell
-$modelRun = "artifacts/models/model-<run-id>"
-elliptic-score --model-run $modelRun --data-dir data/raw --first-step 40 --last-step 49
-$scoreRun = "artifacts/scores/score-<run-id>"
-elliptic-track --model-run $modelRun --score-run $scoreRun
+```sh
+elliptic-score --model-run "artifacts/models/model-<run-id>"
+elliptic-track --model-run "artifacts/models/model-<run-id>" --score-run "artifacts/scores/score-<run-id>"
 mlflow server --backend-store-uri sqlite:///artifacts/tracking/mlflow.db --host 127.0.0.1 --port 5000
 ```
 
-Open `http://127.0.0.1:5000` to browse the local experiment. The batch directory holds the private transaction scores and review queue. The tracker imports aggregate results and can also record an existing training run on its own. [Batch inputs, outputs and SHAP interpretation](docs/scoring.md)
-
-## Architecture
-
-`ingestion` and `validation` read the source tables. `analysis` and `report` produce local diagnostics. `model_features` and `model_evaluation` provide the same predictors and ranking policy to training and scoring. `scoring` uses the saved pipeline and `explanations` computes its feature contributions. `tracking` imports completed runs into a local SQLite-backed MLflow experiment. `api` loads a frozen model at startup and reuses the same feature and inference code.
+Open `http://127.0.0.1:5000` to view the tracked run in MLflow. Review the local score and queue CSVs separately from the aggregate tracking reports. [Batch outputs and tracking](docs/scoring.md)
 
 ## Serve the model
 
-Start Docker Desktop in Linux container mode and build the image with `docker build --tag elliptic-fraud:local .` from the repository root. Mount the trusted training run at startup. Once running, open `http://127.0.0.1:8000/docs` for the interactive API reference. The serving guide includes the full PowerShell commands, a synthetic request and a container smoke test. [Serving guide](docs/serving.md)
+With Docker Desktop running Linux containers, build the image and mount your trusted training run read-only. This PowerShell example uses the path printed by `elliptic-train`.
 
-## Roadmap
+```powershell
+$modelRun = (Resolve-Path 'artifacts/models/model-<run-id>').Path
+docker build --tag elliptic-fraud:local .
+docker run --rm --read-only --publish 127.0.0.1:8000:8000 --mount "type=bind,source=$modelRun,target=/model,readonly" elliptic-fraud:local
+```
 
-| Phase | Deliverable | Status |
-| --- | --- | --- |
-| 0 · Bootstrap | Editable package, local file check, tests and CI configuration | Implemented |
-| 1 · Data | Load and validate the original schema, profile classes and directed edges, and generate local EDA reports | Validated on the full dataset |
-| 2 · Modelling | Compare logistic regression and XGBoost, evaluate a fixed review budget and save the selected pipeline | Trained and evaluated on the full release |
-| 3 · Risk and explanations | Batch scoring, per-transaction SHAP explanations for the review queue and local MLflow tracking | Implemented |
-| 4 · Serving | Serve the frozen model with FastAPI, test score parity and run the Docker smoke test in CI | Implemented |
+Open `http://127.0.0.1:8000/docs` for Swagger UI. `GET /health` reports readiness and the loaded model fingerprint. `POST /v1/score` scores one transaction with its observed funding graph.
+
+```mermaid
+sequenceDiagram
+    participant Client
+    participant API as FastAPI
+    participant Model as Frozen pipeline
+    Client->>API: POST /v1/score with target and funding edges
+    API->>API: Validate graph and derive ancestry features
+    API->>Model: Score the target with the saved pipeline
+    Model-->>API: Illicit-class score
+    API-->>Client: Score, threshold, decision and model hash
+```
+
+<details>
+<summary>Swagger UI and an actual API response</summary>
+
+![Swagger UI from the locally running service, exposing GET /health and POST /v1/score.](docs/assets/fastapi-openapi.png)
+
+This request uses invented IDs and edges. The response below was generated locally by the saved XGBoost model.
+
+```json
+{
+  "transaction_id": "0004",
+  "transactions": ["0001", "0002", "0003", "0004"],
+  "funding_edges": [
+    {"source_id": "0001", "target_id": "0003"},
+    {"source_id": "0002", "target_id": "0004"},
+    {"source_id": "0003", "target_id": "0004"}
+  ]
+}
+```
+
+```json
+{
+  "transaction_id": "0004",
+  "risk_score": 0.024288879707455635,
+  "threshold": 0.16880415380001068,
+  "above_threshold": false,
+  "model_sha256": "b66ee19643d20a1af4e7a393d9d9194f163a04869a2997a04d7d7ebfba9e4282"
+}
+```
+
+</details>
+
+[Serving guide, native launch and container smoke test](docs/serving.md)
+
+## Limitations
+
+- **Selective labels.** 77.15% of the graph is unlabelled. The supervised metrics cover known outcomes, and the queue's 456 unlabelled selections limit conclusions about its yield.
+- **Historical coverage.** The release is a retrospective subgraph, and label publication dates are unavailable. Real-time use would need an auditable graph feed and known label delays.
+- **Operating point and validation.** The score is uncalibrated. The fixed review budget recovered few known illicit transactions. A larger chronological evaluation with fresher labels would help test stability and compare queue policies.
+- **Serving scope.** FastAPI and Docker provide a local demo. Operational use would require separate deployment validation and monitoring.
+
+## Repository guide
+
+| Location | Contents |
+| --- | --- |
+| [`src/elliptic_fraud/`](src/elliptic_fraud) | CSV validation, graph features, modelling, batch scoring, SHAP, tracking and HTTP inference |
+| [`tests/`](tests) and [`scripts/`](scripts) | Offline tests and a synthetic Docker API smoke test |
+| [`data/README.md`](data/README.md) | Dataset layout, provenance and usage terms |
+| [`docs/`](docs) | Evaluation protocol, scoring and serving guides, portfolio figures and [release preparation](docs/release.md) |
+| [`.github/workflows/ci.yml`](.github/workflows/ci.yml) | Automated quality checks on Ubuntu, Windows and Docker |
+
+The dataset, fitted model, transaction-level outputs and MLflow store are generated or supplied locally. The portfolio figures use aggregate statistics from the recorded experiment. [Figure provenance](docs/assets/README.md)
