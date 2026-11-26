@@ -1,7 +1,6 @@
 """Score Elliptic time steps with a trusted local Phase 2 model."""
 
 import argparse
-import hashlib
 import platform
 import sys
 from collections.abc import Sequence
@@ -9,13 +8,10 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
-import joblib
-import numpy as np
 import xgboost
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
 
 from .explanations import explain_scores, plot_importance
+from .inference import load_frozen_model, predict_scores
 from .ingestion import load_scoring_graph
 from .model_evaluation import rank_transactions
 from .model_features import FEATURE_AUDIT, scoring_features
@@ -28,33 +24,6 @@ from .runs import (
     write_json,
 )
 from .schema import EDGES_FILE, FEATURES_FILE, TIME_STEPS, DatasetError
-from .train import predict_scores
-
-
-def _load_model(model_run: Path, manifest: dict) -> Pipeline:
-    schema = manifest.get("features_in_order")
-    if not isinstance(schema, dict) or list(schema) != list(FEATURE_AUDIT):
-        raise DatasetError("Training manifest has an incompatible feature order.")
-    with (model_run / "model.joblib").open("rb") as stream:
-        if hashlib.file_digest(stream, "sha256").hexdigest() != manifest.get(
-            "model_sha256"
-        ):
-            raise DatasetError("Model SHA-256 differs from the training manifest.")
-        stream.seek(0)
-        model = joblib.load(stream)
-    expected = {
-        "xgboost": xgboost.XGBClassifier,
-        "logistic_regression": LogisticRegression,
-    }.get(manifest.get("winner"))
-    if (
-        not isinstance(model, Pipeline)
-        or list(getattr(model, "feature_names_in_", [])) != list(FEATURE_AUDIT)
-        or list(getattr(model, "classes_", [])) != [0, 1]
-        or expected is None
-        or not isinstance(model.named_steps.get("classifier"), expected)
-    ):
-        raise DatasetError("Incompatible fitted model, predictors or class order.")
-    return model
 
 
 def score_batch(
@@ -78,14 +47,13 @@ def score_batch(
     manifest = read_json(manifest_path)
     try:
         start, end = manifest["windows_inclusive"]["test"]
-        threshold, budget, seed = (
-            manifest["threshold"],
+        budget, seed = (
             manifest["review_budget_per_step"],
             manifest["seed"],
         )
     except (KeyError, ValueError, TypeError) as exc:
         raise DatasetError(
-            "Training manifest lacks a valid window, threshold, seed or budget."
+            "Training manifest lacks a valid window, seed or budget."
         ) from exc
     first = start if first_step is None else first_step
     last = end if last_step is None else last_step
@@ -97,17 +65,10 @@ def score_batch(
         or first > last
     ):
         raise DatasetError("Choose an inclusive scoring window from 1 to 49.")
-    if (
-        type(budget) is not int
-        or budget < 1
-        or type(seed) is not int
-        or type(threshold) not in (int, float)
-        or not 0 <= threshold <= 1
-    ):
-        raise DatasetError(
-            "Invalid review budget, seed or operating threshold in the manifest."
-        )
-    model = _load_model(model_run, manifest)
+    if type(budget) is not int or budget < 1 or type(seed) is not int:
+        raise DatasetError("Invalid review budget or seed in the training manifest.")
+    frozen = load_frozen_model(model_run, manifest)
+    model, threshold = frozen.pipeline, frozen.threshold
     graph = load_scoring_graph(data_dir)
     features, steps = scoring_features(graph, first, last)
     input_hashes = {path.name: file_digest(path) for path in paths}
@@ -115,8 +76,6 @@ def score_batch(
     if before != file_state([manifest_path, *paths]):
         raise DatasetError("An input changed during batch ingestion.")
     scores = predict_scores(model, features).astype("float64")
-    if not np.isfinite(scores).all() or not scores.between(0, 1).all():
-        raise DatasetError("Model returned an invalid positive-class score.")
     ranked = rank_transactions(steps, scores, seed)
     ranked["above_threshold"] = ranked["risk_score"].ge(threshold)
     ranked["in_review_queue"] = ranked["review_rank"].le(budget)
@@ -131,8 +90,8 @@ def score_batch(
     )
     summary = {
         "created_utc": datetime.now(UTC).isoformat(),
-        "model": manifest["winner"],
-        "model_sha256": manifest["model_sha256"],
+        "model": frozen.name,
+        "model_sha256": frozen.sha256,
         "training_manifest_sha256": training_manifest_hash,
         "implementation_sha256": implementation_digest(),
         "input_files_sha256": input_hashes,

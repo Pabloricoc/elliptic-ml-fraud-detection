@@ -4,7 +4,7 @@ This portfolio project ranks Bitcoin transactions for analyst review using the o
 
 ## Current scope
 
-The package validates the original CSVs, produces an aggregate exploratory report, trains two chronological baselines and scores unlabelled batches with the selected model. Analysts can inspect the review queue and its SHAP explanations locally. MLflow records the experiment settings, evaluation and aggregate explanations.
+The package validates the original CSVs, produces an aggregate exploratory report, trains two chronological baselines and scores unlabelled batches with the selected model. Analysts can inspect the review queue and its SHAP explanations locally. MLflow records the experiment settings, evaluation and aggregate explanations. A FastAPI service can score a transaction on demand with the same saved pipeline and threshold.
 
 A local data audit covered 203,769 transactions and 234,355 directed edges across all 49 time steps. Only 46,564 transactions have a known outcome. On the final ten steps, the selected XGBoost model achieved 0.0882 average precision on labelled transactions. A budget of 50 reviews per step captured 5 of 636 known illicit cases. [Experiment results and label coverage](docs/evaluation.md#recorded-local-result)
 
@@ -117,7 +117,11 @@ Open `http://127.0.0.1:5000` to browse the local experiment. The batch directory
 
 ## Architecture
 
-`ingestion` and `validation` read the source tables. `analysis` and `report` produce local diagnostics. `model_features` and `model_evaluation` provide the same predictors and ranking policy to training and scoring. `scoring` uses the saved pipeline and `explanations` computes its feature contributions. `tracking` imports completed runs into a local SQLite-backed MLflow experiment.
+`ingestion` and `validation` read the source tables. `analysis` and `report` produce local diagnostics. `model_features` and `model_evaluation` provide the same predictors and ranking policy to training and scoring. `scoring` uses the saved pipeline and `explanations` computes its feature contributions. `tracking` imports completed runs into a local SQLite-backed MLflow experiment. `api` loads a frozen model at startup and reuses the same feature and inference code.
+
+## Serve the model
+
+Start Docker Desktop in Linux container mode and build the image with `docker build --tag elliptic-fraud:local .` from the repository root. Mount the trusted training run at startup. Once running, open `http://127.0.0.1:8000/docs` for the interactive API reference. The serving guide includes the full PowerShell commands, a synthetic request and a container smoke test. [Serving guide](docs/serving.md)
 
 ## Roadmap
 
@@ -127,4 +131,4 @@ Open `http://127.0.0.1:5000` to browse the local experiment. The batch directory
 | 1 · Data | Load and validate the original schema, profile classes and directed edges, and generate local EDA reports | Validated on the full dataset |
 | 2 · Modelling | Compare logistic regression and XGBoost, evaluate a fixed review budget and save the selected pipeline | Trained and evaluated on the full release |
 | 3 · Risk and explanations | Batch scoring, per-transaction SHAP explanations for the review queue and local MLflow tracking | Implemented |
-| 4 · Serving | Package the selected model behind FastAPI, test inference and build a Docker image | Planned |
+| 4 · Serving | Serve the frozen model with FastAPI, test score parity and run the Docker smoke test in CI | Implemented |
