@@ -18,11 +18,17 @@ def test_published_report_inherits_the_same_acl_as_a_normal_sibling(
     assert (final / "result").read_text() == "complete"
     # A moved TemporaryDirectory can be readable by the test runner yet
     # inaccessible to a different user who normally has access to the parent.
-    script = (
-        "$normal = (Get-Acl -LiteralPath $env:ACL_REFERENCE).GetSecurityDescriptorSddlForm('Access'); "
-        "$report = (Get-Acl -LiteralPath $env:ACL_RUN).GetSecurityDescriptorSddlForm('Access'); "
-        "if ($normal -ne $report) { exit 1 }"
-    )
+    # CI may launch Windows PowerShell with module paths inherited from pwsh.
+    # Read both DACLs through .NET so the check also works without Get-Acl.
+    script = """
+        $ErrorActionPreference = 'Stop'
+        $PSModuleAutoLoadingPreference = 'None'
+        $access = [System.Security.AccessControl.AccessControlSections]::Access
+        function Read-Dacl([string]$path) {
+            return [IO.Directory]::GetAccessControl($path, $access).GetSecurityDescriptorSddlForm($access)
+        }
+        if ((Read-Dacl $env:ACL_REFERENCE) -ne (Read-Dacl $env:ACL_RUN)) { exit 1 }
+    """
     subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
         env={**os.environ, "ACL_REFERENCE": str(sibling), "ACL_RUN": str(final)},

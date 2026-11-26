@@ -1,5 +1,13 @@
 # Working on Elliptic ML Fraud Detection
 
+## GitHub workflow
+
+- Start pending work with a GitHub issue describing the problem, the expected result and how to verify it. Check existing issues first. Group upcoming deliverables into phase milestones. Use a maintenance milestone for cross-phase CI fixes. Create issues for open work and avoid backfilling completed phases.
+- Create a dedicated feature, fix or documentation branch from the current base before editing. Keep `main` for reviewed changes. Use a separate worktree when another task is already in progress.
+- Open a focused pull request linked with `Closes #<issue>`. Describe the change and report the checks actually run. If a PR depends on an open fix, name its base PR and retarget it after the base lands.
+- Create issues, milestones, branches and pull requests as part of the work. Monitor GitHub Actions on the latest changes, investigate failures and rerun the relevant checks after each fix.
+- Merge only after all required CI jobs pass on the current revision and the repository owner has reviewed and approved the changes. Request another review after material changes to an approved revision.
+
 ## Code and checks
 
 - Target Python 3.11 and 3.12. Keep package code in `src/elliptic_fraud/` and tests in `tests/`. Use type annotations on public functions and `pathlib` for cross-platform paths.
