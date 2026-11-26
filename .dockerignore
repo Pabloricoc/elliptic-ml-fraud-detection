@@ -1,0 +1,10 @@
+# Send only the inputs needed to install the package in the image.
+**
+!Dockerfile
+!.dockerignore
+!README.md
+!pyproject.toml
+!constraints-dev.txt
+!src/
+!src/elliptic_fraud/
+!src/elliptic_fraud/*.py

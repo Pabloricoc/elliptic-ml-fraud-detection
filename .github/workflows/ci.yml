@@ -29,3 +29,19 @@ jobs:
         run: python -m ruff format --check .
       - name: Run tests
         run: python -m pytest
+
+  container:
+    name: Docker API smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install smoke test dependencies
+        run: python -m pip install -c constraints-dev.txt -e .
+      - name: Build the inference image
+        run: docker build --tag elliptic-fraud:ci .
+      - name: Score a synthetic graph in the running container
+        run: python scripts/smoke_container.py elliptic-fraud:ci
