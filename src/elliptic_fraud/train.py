@@ -10,12 +10,12 @@ from importlib.metadata import version
 from pathlib import Path
 
 import joblib
-import pandas as pd
 import xgboost
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from .inference import predict_scores as predict_scores
 from .ingestion import load_dataset
 from .model_evaluation import (
     at_threshold,
@@ -62,14 +62,6 @@ def _candidates() -> dict[str, Pipeline]:
         ),
         "xgboost": Pipeline([("classifier", xgboost.XGBClassifier(**BOOST_PARAMS))]),
     }
-
-
-def predict_scores(model: Pipeline, features: pd.DataFrame) -> pd.Series:
-    """Return the positive-class score for each transaction, preserving its join key."""
-    positive = list(model.classes_).index(1)
-    return pd.Series(
-        model.predict_proba(features)[:, positive], index=features.index, name="score"
-    )
 
 
 @dataclass
