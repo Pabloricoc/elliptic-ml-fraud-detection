@@ -1,7 +1,7 @@
 ![Elliptic ML Fraud Detection — Bitcoin transaction risk, from temporal evaluation to local inference](docs/assets/elliptic-banner.svg)
 
 [![Quality checks on main](https://github.com/Pabloricoc/elliptic-ml-fraud-detection/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Pabloricoc/elliptic-ml-fraud-detection/actions/workflows/ci.yml)
-[![Python 3.11 and 3.12](https://img.shields.io/badge/Python-3.11%20%7C%203.12-365d8d?logo=python&logoColor=white)](#reproduce-the-pipeline)
+[![Python 3.11 and 3.12](docs/assets/python-versions.svg)](#reproduce-the-pipeline)
 
 **An end-to-end ML engineering project for prioritising Bitcoin transactions for analyst review.** It validates the Elliptic graph, builds features from observed funding history, compares models on chronological windows and serves the selected pipeline through a local API. Batch scores feed a capacity-limited review queue with SHAP explanations.
 
@@ -13,7 +13,7 @@
 
 ## Results
 
-**XGBoost reached 0.0882 average precision on the labelled test subset**, compared with 0.0569 for a constant-score reference. At 50 reviews per time step, the queue captured **5 of 636 known illicit transactions** (0.79%). The two results measure different things. Average precision measures ranking on known labels. The review budget applies to the full eligible batch.
+**XGBoost reached 0.0882 average precision on the labelled test subset**, compared with 0.0569 for a constant-score reference. At 50 reviews per time step, the queue captured **5 of 636 known illicit transactions** (0.79%). Average precision measures ranking on known labels. The review budget applies to the full eligible batch.
 
 | Candidate | Validation AP · steps 30–39 | Test AP · steps 40–49 |
 | --- | ---: | ---: |

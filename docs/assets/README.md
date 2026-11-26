@@ -1,6 +1,6 @@
 # Portfolio figure provenance
 
-The banner is an original SVG. Its nodes and edges illustrate a funding graph conceptually.
+The banner is an original SVG. Its nodes and edges illustrate a funding graph conceptually. The local Python badge records the versions supported by the package and checked in CI.
 
 | Figure | Aggregate source |
 | --- | --- |
