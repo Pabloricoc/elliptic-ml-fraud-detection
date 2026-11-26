@@ -45,4 +45,4 @@ A transaction with no observed parents uses its own ID and an empty edge list. T
 
 ## Verify the container
 
-With the project installed locally, run `python scripts/smoke_container.py elliptic-fraud:local` after building the image. The script creates a temporary synthetic model, mounts it read-only, waits for Docker to report the service healthy, compares an HTTP score to the same pipeline on the host and stops the test container.
+With the project installed locally, run `python scripts/smoke_container.py elliptic-fraud:local` after building the image. The script creates a temporary synthetic model, mounts it read-only, waits for Docker to report the service healthy and compares an HTTP score to the same pipeline on the host. It removes the test container after a successful check or a failed startup.

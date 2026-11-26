@@ -9,6 +9,7 @@ import time
 from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 import joblib
 import pandas as pd
@@ -29,8 +30,10 @@ TARGET = "0004"
 THRESHOLD = 0.55
 
 
-def docker(*args: str) -> str:
-    return subprocess.check_output(["docker", *args], text=True, timeout=90).strip()
+def docker(*args: str, timeout: int = 90) -> str:
+    return subprocess.check_output(
+        ["docker", *args], text=True, timeout=timeout
+    ).strip()
 
 
 def fetch_json(url: str, body: dict | None = None) -> dict:
@@ -81,21 +84,26 @@ def smoke_test(image: str) -> None:
             },
         )
 
-        container = docker(
-            "run",
-            "--detach",
-            "--rm",
-            "--read-only",
-            "--publish",
-            "127.0.0.1::8000",
-            "--mount",
-            f"type=bind,source={run},target=/model,readonly",
-            image,
-        )
+        container = f"elliptic-smoke-{uuid4().hex}"
         try:
+            # Name the container before starting it so that cleanup can also
+            # remove a container that never got past the Created state.
+            docker(
+                "create",
+                "--name",
+                container,
+                "--read-only",
+                "--publish",
+                "127.0.0.1::8000",
+                "--mount",
+                f"type=bind,source={run},target=/model,readonly",
+                image,
+                timeout=180,
+            )
+            docker("start", container, timeout=180)
             address = docker("port", container, "8000/tcp")
             root = f"http://{address}"
-            deadline = time.monotonic() + 75
+            deadline = time.monotonic() + 150
             while (
                 docker("inspect", "--format", "{{.State.Health.Status}}", container)
                 != "healthy"
@@ -129,12 +137,17 @@ def smoke_test(image: str) -> None:
             ):
                 raise RuntimeError("The API response differs from the host model.")
             print("Container became healthy and scored the synthetic graph correctly.")
-        except (subprocess.CalledProcessError, RuntimeError, URLError):
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            RuntimeError,
+            URLError,
+        ):
             subprocess.run(["docker", "logs", container], check=False, timeout=15)
             raise
         finally:
             subprocess.run(
-                ["docker", "stop", "--time", "5", container], check=False, timeout=20
+                ["docker", "rm", "--force", container], check=False, timeout=30
             )
 
 
