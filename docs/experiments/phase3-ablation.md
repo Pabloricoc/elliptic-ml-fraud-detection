@@ -31,7 +31,7 @@ AP is averaged over validation steps with known illicit cases and then over fold
 | S2 | T1b+T2+T2agg+T3 | random_forest | 0.922247 ± 0.087721 | T1b+T2+T3 | -0.002028 ± 0.003922 | 0.863000 | 17.645880 | 1.80 | 19/20 |
 | S2 | T1b+T2+T2agg+T3 minus A1 flags | xgboost | 0.919283 ± 0.078789 | T1b+T2+T2agg+T3 | -0.002402 ± 0.000839 | 0.864000 | 17.733525 | 1.60 | 20/20 |
 
-## Decisions
+## Original decisions
 
 Arms are considered in configuration order, with XGBoost before random forest. A candidate must improve AP in at least three folds, exceed one paired SE on average, match the incumbent's labelled P@50 and have at most five tied transactions in at least 90% of steps. Within one paired SE, prefer fewer columns and then fewer trees when both operational constraints pass.
 
@@ -69,3 +69,35 @@ Within each fold, partial Spearman is computed on training rows for each T2/T3 c
 The filtered row repeats **T1b+T2+T2agg+T3 (xgboost)**.
 
 Aggregate artifact: `artifacts/experiments/phase3-eab31c77964ce9c88e68f29c7df8653ba146c71f0bd4b514fb02b8cbcdd36813.json`.
+
+## Decision rule review
+
+The original decisions above required an absolute cutoff-tie pass for every challenger. The initial reference could remain even if it failed that same requirement. This asymmetry rejected candidates that improved AP and reduced ties. The review identified the issue using the saved development fold aggregates and introduced no holdout access.
+
+The corrected comparisons require AP gains in at least three folds and a mean gain greater than one paired SE. A challenger must also meet the incumbent's labelled P@50 and have at most the incumbent's mean cutoff tie mass. Within one paired SE, fewer columns are preferred subject to the precision and relative tie constraints. The absolute cutoff requirement (at most five ties in at least 90% of steps) applies at final pre-registration or deployment.
+
+The corrected tier decisions use the reference paths declared in the configuration, with the same family on each tier edge. This compares a tier with the inputs it replaces or extends. Among arms that pass these comparisons, the highest mean AP is the reference for the paired simplicity check. The running-incumbent replay is reported separately because comparing across feature branches can make the result depend on declaration order.
+
+| Scenario | Candidate | Declared reference | Columns | Positive folds | Δ AP ± SE | Precision floor | Mean ties | Outcome |
+| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |
+| S1 | T0 (random_forest) | T0 (xgboost) | 4 | 1/4 | -0.005310 ± 0.003642 | fail | pass | retained incumbent |
+| S1 | T1 (xgboost) | T0 (xgboost) | 7 | 1/4 | -0.008904 ± 0.008614 | fail | pass | retained incumbent |
+| S1 | T1 (random_forest) | T0 (random_forest) | 7 | 1/4 | -0.010858 ± 0.007383 | fail | pass | retained incumbent |
+| S2 | T1b (random_forest) | T1b (xgboost) | 4 | 2/4 | -0.002810 ± 0.009672 | pass | pass | retained incumbent |
+| S2 | T2 (xgboost) | T1b (xgboost) | 93 | 4/4 | 0.693043 ± 0.039451 | pass | pass | improves |
+| S2 | T2 (random_forest) | T1b (random_forest) | 93 | 4/4 | 0.705453 ± 0.041989 | pass | pass | improves |
+| S2 | T1b+T2 (xgboost) | T1b (xgboost) | 97 | 4/4 | 0.694923 ± 0.039732 | pass | pass | improves |
+| S2 | T1b+T2 (random_forest) | T1b (random_forest) | 97 | 4/4 | 0.705383 ± 0.042386 | pass | pass | improves |
+| S2 | T2agg+T2 (xgboost) | T2 (xgboost) | 467 | 4/4 | 0.003415 ± 0.001071 | pass | pass | improves |
+| S2 | T2agg+T2 (random_forest) | T2 (random_forest) | 467 | 1/4 | -0.002219 ± 0.001026 | pass | pass | retained incumbent |
+| S2 | T1b+T2+T3 (xgboost) | T1b+T2 (xgboost) | 169 | 4/4 | 0.007212 ± 0.003220 | pass | pass | improves |
+| S2 | T1b+T2+T3 (random_forest) | T1b+T2 (random_forest) | 169 | 3/4 | 0.004973 ± 0.003652 | pass | pass | improves |
+| S2 | T1b+T2+T2agg+T3 (xgboost) | T1b+T2+T3 (xgboost) | 543 | 2/4 | 0.002821 ± 0.003562 | pass | pass | retained incumbent |
+| S2 | T1b+T2+T2agg+T3 (random_forest) | T1b+T2+T3 (random_forest) | 543 | 1/4 | -0.002028 ± 0.003922 | fail | pass | retained incumbent |
+
+### Phase 4 candidates
+
+- **S1** carries forward `T0`. The corrected choice is T0 (xgboost) with mean step AP 0.217357. Its absolute tie check is 0/20 steps (fail). A single running incumbent under the corrected comparisons would retain T0 (xgboost).
+- **S2** carries forward `T1b+T2+T3`, `T1b+T2+T2agg+T3`. The corrected choice is T1b+T2+T3 (random_forest) with mean step AP 0.924275. Its absolute tie check is 17/20 steps (fail). A single running incumbent under the corrected comparisons would retain T1b+T2+T2agg+T3 (xgboost).
+
+The A1 sensitivity above records the original experiment on the 543-column arm. This review reuses the completed folds, including that original sensitivity.

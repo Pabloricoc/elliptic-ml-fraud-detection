@@ -223,7 +223,9 @@ def run_ablation(
             ]
             arm = summarize_arm(features.scenario, features.name, family, reports)
             arm["paired_tier"] = (
-                paired_comparison(arm, arms[features.scenario, entry.against, family])
+                paired_comparison(
+                    arm, arms[features.scenario, entry.against, family], original=True
+                )
                 if entry.against is not None
                 else None
             )
@@ -233,7 +235,7 @@ def run_ablation(
     selection = {}
     for scenario in ("S1", "S2"):
         incumbent, comparisons = select_incumbent(
-            [arm for arm in arms.values() if arm["scenario"] == scenario]
+            [arm for arm in arms.values() if arm["scenario"] == scenario], original=True
         )
         selection[scenario] = {
             "incumbent": incumbent,
@@ -279,7 +281,7 @@ def run_ablation(
             "S2", f"{feature_name} minus A1 flags", family, reports
         )
         source = arms[source_key]
-        filtered["paired_tier"] = paired_comparison(filtered, source)
+        filtered["paired_tier"] = paired_comparison(filtered, source, original=True)
         sensitivity = {
             "source": source,
             "filtered": filtered,
@@ -308,23 +310,129 @@ def run_ablation(
     return report_json
 
 
+def review_cached_ablation(report_path: Path) -> Path:
+    """Regenerate decisions from a verified aggregate and its saved folds."""
+    key = report_path.stem.removeprefix("phase3-")
+    if (
+        report_path.suffix != ".json"
+        or not report_path.stem.startswith("phase3-")
+        or len(key) != 64
+        or any(char not in "0123456789abcdef" for char in key)
+    ):
+        raise DatasetError("Choose a saved phase 3 aggregate JSON.")
+    summary = read_json(report_path)
+    folds = development_folds()
+    provenance = (
+        "development_snapshot_sha256",
+        "source_snapshot_sha256",
+        "implementation_sha256",
+        "environment",
+    )
+    expected_key = snapshot_digest(
+        {
+            "plan": summary["config"],
+            **{field: summary[field] for field in (*provenance, "git_commit")},
+        }
+    )
+    if key != expected_key:
+        raise DatasetError("The aggregate does not match its configuration identifier.")
+    declared = _plan(summary["config"])
+    indexed = {
+        (arm["scenario"], arm["features"], arm["family"]): arm
+        for arm in summary["arms"]
+    }
+    if list(indexed) != [
+        (entry.feature_set.scenario, entry.feature_set.name, family)
+        for entry in declared
+        for family in FAMILIES
+    ]:
+        raise DatasetError("The saved arms do not match the declared ablation plan.")
+    for entry in declared:
+        scenario, name = entry.feature_set.scenario, entry.feature_set.name
+        for family in FAMILIES:
+            arm = indexed[scenario, name, family]
+            original_pair = (
+                paired_comparison(
+                    arm, indexed[scenario, entry.against, family], original=True
+                )
+                if entry.against is not None
+                else None
+            )
+            if arm["paired_tier"] != original_pair:
+                raise DatasetError(
+                    "A saved tier comparison differs from its declared reference."
+                )
+    arms = [(arm, arm["features"]) for arm in summary["arms"]]
+    sensitivity = summary["sensitivity"]
+    if sensitivity:
+        arms.append((sensitivity["filtered"], sensitivity["source"]["features"]))
+    for arm, name in arms:
+        reports = []
+        for reference, fold in zip(arm["folds"], folds, strict=True):
+            digest = reference["config_sha256"]
+            if len(digest) != 64 or any(
+                char not in "0123456789abcdef" for char in digest
+            ):
+                raise DatasetError("Invalid cached fold identifier.")
+            report = read_json(report_path.parent / digest / "evaluation.json")
+            config = report["config"]
+            if (
+                report["config_sha256"] != digest
+                or snapshot_digest(config) != digest
+                or any(config[field] != summary[field] for field in provenance)
+                or config["scenario"] != arm["scenario"]
+                or config["feature_set"] != name
+                or config["family"] != arm["family"]
+                or config["fold"]
+                != {
+                    "name": fold.name,
+                    "train": list(fold.train),
+                    "validation": list(fold.validation),
+                }
+                or report["validation"]["support"]["last_step"] != fold.validation[1]
+            ):
+                raise DatasetError("A cached fold does not match the saved ablation.")
+            reports.append({**report, "mlflow_run_id": reference["mlflow_run_id"]})
+        computed = summarize_arm(
+            arm["scenario"], arm["features"], arm["family"], reports
+        )
+        if any(computed[field] != arm[field] for field in computed):
+            raise DatasetError("Saved arm metrics differ from the cached fold reports.")
+    review_path = report_path.with_suffix(".review.md")
+    with FileLock(review_path.with_suffix(".lock")):
+        temporary = review_path.with_suffix(".partial")
+        temporary.write_text(render_ablation(summary), encoding="utf-8")
+        temporary.replace(review_path)
+    return review_path
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the phase 3 fold plan from JSON and a frozen development export."""
     parser = argparse.ArgumentParser(description=main.__doc__)
-    parser.add_argument("--config", required=True, type=Path)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--config", type=Path)
+    mode.add_argument(
+        "--review-results",
+        type=Path,
+        help="regenerate the report from cached phase 3 folds",
+    )
     parser.add_argument("--development-dir", type=Path, default=DEVELOPMENT_DIR)
     parser.add_argument(
         "--output-dir", type=Path, default=Path("artifacts/experiments")
     )
     args = parser.parse_args(argv)
     try:
+        if args.review_results is not None:
+            review = review_cached_ablation(args.review_results)
+            print(f"Reviewed ablation written to {review}.")
+            return 0
         report = run_ablation(
             args.config,
             args.development_dir,
             args.output_dir,
             git_commit=clean_git_revision(),
         )
-    except (OSError, DatasetError) as error:
+    except (OSError, KeyError, TypeError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)
         return 1
     print(

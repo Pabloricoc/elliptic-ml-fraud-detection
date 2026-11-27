@@ -55,7 +55,14 @@ def summarize_arm(scenario: str, name: str, family: str, runs: list[dict]) -> di
     }
 
 
-def paired_comparison(candidate: dict, baseline: dict) -> dict:
+def _absolute_ties_ok(arm: dict) -> bool:
+    steps = arm["validation_steps"]
+    return steps > 0 and 10 * arm["small_ties"] >= 9 * steps
+
+
+def paired_comparison(
+    candidate: dict, baseline: dict, *, original: bool = False
+) -> dict:
     """Compare matching fold APs and report the operational constraints."""
     deltas = [
         new - old if new is not None and old is not None else None
@@ -69,8 +76,17 @@ def paired_comparison(candidate: dict, baseline: dict) -> dict:
     precision_ok = (
         precision is not None and required is not None and precision >= required
     )
-    steps = candidate["validation_steps"]
-    ties_ok = steps > 0 and 10 * candidate["small_ties"] >= 9 * steps
+    candidate_ties, baseline_ties = (
+        candidate["mean_tie_mass"],
+        baseline["mean_tie_mass"],
+    )
+    ties_ok = (
+        _absolute_ties_ok(candidate)
+        if original
+        else candidate_ties is not None
+        and baseline_ties is not None
+        and candidate_ties <= baseline_ties
+    )
     complete = len(defined) == len(deltas) == 4
     improvement = (
         complete and positive >= 3 and mean is not None and se is not None and mean > se
@@ -80,7 +96,11 @@ def paired_comparison(candidate: dict, baseline: dict) -> dict:
         and mean is not None
         and se is not None
         and abs(mean) <= se
-        and candidate["complexity"] < baseline["complexity"]
+        and (
+            candidate["complexity"] < baseline["complexity"]
+            if original
+            else candidate["complexity"][0] < baseline["complexity"][0]
+        )
     )
     return {
         "reference": {"features": baseline["features"], "family": baseline["family"]},
@@ -100,12 +120,14 @@ def paired_comparison(candidate: dict, baseline: dict) -> dict:
     }
 
 
-def select_incumbent(arms: list[dict]) -> tuple[dict, list[dict]]:
+def select_incumbent(
+    arms: list[dict], *, original: bool = False
+) -> tuple[dict, list[dict]]:
     """Apply the decision rule in declared order from the first XGBoost arm."""
     incumbent = arms[0]
     comparisons = []
     for arm in arms[1:]:
-        comparison = paired_comparison(arm, incumbent)
+        comparison = paired_comparison(arm, incumbent, original=original)
         comparisons.append(
             {"features": arm["features"], "family": arm["family"], **comparison}
         )
@@ -114,8 +136,117 @@ def select_incumbent(arms: list[dict]) -> tuple[dict, list[dict]]:
     return incumbent, comparisons
 
 
+def review_selection(arms: list[dict]) -> dict:
+    """Use the declared tier comparisons to review the next-phase feature sets."""
+    decisions = {}
+    for scenario in ("S1", "S2"):
+        scenario_arms = [arm for arm in arms if arm["scenario"] == scenario]
+        plan = {(arm["features"], arm["family"]): arm for arm in scenario_arms}
+        comparisons = []
+        eligible = []
+        for arm in scenario_arms:
+            pair = arm["paired_tier"]
+            if pair is None:
+                # Compare the reference tier's second family to its fixed XGBoost anchor.
+                reference = scenario_arms[0]
+                if arm is reference:
+                    continue
+            else:
+                previous = pair["reference"]
+                reference = plan[previous["features"], previous["family"]]
+            comparison = paired_comparison(arm, reference)
+            comparisons.append(
+                {
+                    "features": arm["features"],
+                    "family": arm["family"],
+                    "columns": arm["complexity"][0],
+                    **comparison,
+                }
+            )
+            if comparison["decision"] != "retained incumbent":
+                eligible.append(arm)
+        # Identify the strongest supported AP, then apply the paired simplicity rule.
+        leader = max(
+            eligible, key=lambda arm: arm["mean_step_ap"], default=scenario_arms[0]
+        )
+        simpler = [
+            arm
+            for arm in eligible
+            if paired_comparison(arm, leader)["decision"] == "simpler within 1 SE"
+        ]
+        winner = min(
+            simpler,
+            key=lambda arm: (arm["complexity"][0], -arm["mean_step_ap"]),
+            default=leader,
+        )
+        sequential, _ = select_incumbent(scenario_arms)
+        short_list = [winner["features"]]
+        if scenario == "S2":
+            alternative = "T1b+T2+T2agg+T3"
+            if alternative != winner["features"] and any(
+                arm["features"] == alternative for arm in scenario_arms
+            ):
+                short_list.append(alternative)
+        decisions[scenario] = {
+            "winner": winner,
+            "final_ties_ok": _absolute_ties_ok(winner),
+            "sequential_winner": sequential,
+            "comparisons": comparisons,
+            "phase4": short_list,
+        }
+    return decisions
+
+
 def _number(value: float | None, digits: int = 6) -> str:
     return f"{value:.{digits}f}" if value is not None else "undefined"
+
+
+def _render_decision_review(decisions: dict) -> list[str]:
+    lines = [
+        "## Decision rule review",
+        "",
+        "The original decisions above required an absolute cutoff-tie pass for every challenger. The initial reference could remain even if it failed that same requirement. This asymmetry rejected candidates that improved AP and reduced ties. The review identified the issue using the saved development fold aggregates and introduced no holdout access.",
+        "",
+        "The corrected comparisons require AP gains in at least three folds and a mean gain greater than one paired SE. A challenger must also meet the incumbent's labelled P@50 and have at most the incumbent's mean cutoff tie mass. Within one paired SE, fewer columns are preferred subject to the precision and relative tie constraints. The absolute cutoff requirement (at most five ties in at least 90% of steps) applies at final pre-registration or deployment.",
+        "",
+        "The corrected tier decisions use the reference paths declared in the configuration, with the same family on each tier edge. This compares a tier with the inputs it replaces or extends. Among arms that pass these comparisons, the highest mean AP is the reference for the paired simplicity check. The running-incumbent replay is reported separately because comparing across feature branches can make the result depend on declaration order.",
+        "",
+        "| Scenario | Candidate | Declared reference | Columns | Positive folds | Δ AP ± SE | Precision floor | Mean ties | Outcome |",
+        "| --- | --- | --- | ---: | ---: | ---: | --- | --- | --- |",
+    ]
+    for scenario, decision in decisions.items():
+        for comparison in decision["comparisons"]:
+            ref = comparison["reference"]
+            lines.append(
+                f"| {scenario} | {comparison['features']} ({comparison['family']}) | "
+                f"{ref['features']} ({ref['family']}) | {comparison['columns']} | "
+                f"{comparison['positive_folds']}/4 | "
+                f"{_number(comparison['delta'])} ± {_number(comparison['paired_se'])} | "
+                f"{'pass' if comparison['precision_ok'] else 'fail'} | "
+                f"{'pass' if comparison['ties_ok'] else 'fail'} | {comparison['decision']} |"
+            )
+    lines.extend(["", "### Phase 4 candidates", ""])
+    for scenario, decision in decisions.items():
+        winner = decision["winner"]
+        sequential = decision["sequential_winner"]
+        candidates = ", ".join(f"`{name}`" for name in decision["phase4"])
+        lines.append(
+            f"- **{scenario}** carries forward {candidates}. The corrected choice is "
+            f"{winner['features']} ({winner['family']}) with mean step AP "
+            f"{_number(winner['mean_step_ap'])}. Its absolute tie check is "
+            f"{winner['small_ties']}/{winner['validation_steps']} steps "
+            f"({'pass' if decision['final_ties_ok'] else 'fail'}). A single running "
+            f"incumbent under the corrected comparisons would retain {sequential['features']} "
+            f"({sequential['family']})."
+        )
+    lines.extend(
+        [
+            "",
+            "The A1 sensitivity above records the original experiment on the 543-column arm. This review reuses the completed folds, including that original sensitivity.",
+            "",
+        ]
+    )
+    return lines
 
 
 def render_ablation(summary: dict) -> str:
@@ -158,7 +289,7 @@ def render_ablation(summary: dict) -> str:
     lines.extend(
         [
             "",
-            "## Decisions",
+            "## Original decisions",
             "",
             "Arms are considered in configuration order, with XGBoost before random forest. A candidate must improve AP in at least three folds, exceed one paired SE on average, match the incumbent's labelled P@50 and have at most five tied transactions in at least 90% of steps. Within one paired SE, prefer fewer columns and then fewer trees when both operational constraints pass.",
             "",
@@ -221,4 +352,5 @@ def render_ablation(summary: dict) -> str:
             ]
         )
     lines.extend(["", f"Aggregate artifact: `{summary['artifact']}`.", ""])
+    lines.extend(_render_decision_review(review_selection(summary["arms"])))
     return "\n".join(lines)

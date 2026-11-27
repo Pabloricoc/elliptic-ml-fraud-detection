@@ -45,6 +45,7 @@ def test_selection_applies_paired_improvement_and_both_operational_gates() -> No
         "p_lab_50": 0.3,
         "validation_steps": 20,
         "small_ties": 20,
+        "mean_tie_mass": 5.0,
         "complexity": [4, 100],
     }
     candidate = {
@@ -52,11 +53,14 @@ def test_selection_applies_paired_improvement_and_both_operational_gates() -> No
         "features": "T1",
         "fold_ap": [0.3, 0.3, 0.31, 0.29],
         "small_ties": 18,
+        "mean_tie_mass": 4.0,
     }
     selected, comparisons = select_incumbent([baseline, candidate])
     assert selected == candidate and comparisons[0]["decision"] == "improves"
     assert (
-        paired_comparison({**candidate, "small_ties": 17}, baseline)["decision"]
+        paired_comparison({**candidate, "small_ties": 17}, baseline, original=True)[
+            "decision"
+        ]
         == "retained incumbent"
     )
     assert (
@@ -77,6 +81,68 @@ def test_selection_applies_paired_improvement_and_both_operational_gates() -> No
     )
     simpler = {**candidate, "fold_ap": [0.2] * 4, "complexity": [3, 100]}
     assert paired_comparison(simpler, baseline)["decision"] == "simpler within 1 SE"
+
+
+def test_relative_tie_rule_allows_an_improvement_over_a_failing_incumbent() -> None:
+    baseline = {
+        "features": "T1b",
+        "family": "xgboost",
+        "fold_ap": [0.2] * 4,
+        "p_lab_50": 0.3,
+        "validation_steps": 20,
+        "small_ties": 0,
+        "mean_tie_mass": 150.0,
+        "complexity": [4, 100],
+    }
+    candidate = {
+        **baseline,
+        "features": "T2",
+        "fold_ap": [0.8, 0.85, 0.9, 0.95],
+        "p_lab_50": 0.4,
+        "small_ties": 10,
+        "mean_tie_mass": 15.0,
+        "complexity": [93, 100],
+    }
+    assert (
+        paired_comparison(candidate, baseline, original=True)["decision"]
+        == "retained incumbent"
+    )
+    winner, _ = select_incumbent([baseline, candidate])
+    assert winner == candidate
+    worse_ties = {**candidate, "mean_tie_mass": 151.0}
+    assert select_incumbent([baseline, worse_ties])[0] == baseline
+
+
+def test_simplicity_prefers_fewer_columns_within_one_paired_standard_error() -> None:
+    incumbent = {
+        "features": "full",
+        "family": "xgboost",
+        "fold_ap": [0.4] * 4,
+        "complexity": [543, 100],
+        "p_lab_50": 0.5,
+        "validation_steps": 20,
+        "small_ties": 10,
+        "mean_tie_mass": 5.0,
+    }
+    candidate = {
+        **incumbent,
+        "features": "smaller",
+        "fold_ap": [0.39, 0.41, 0.399, 0.4],
+        "complexity": [169, 500],
+        "mean_tie_mass": 4.0,
+    }
+    comparison = paired_comparison(candidate, incumbent)
+    assert abs(comparison["delta"]) < comparison["paired_se"]
+    assert comparison["decision"] == "simpler within 1 SE"
+    same_columns = {**candidate, "complexity": [543, 99]}
+    assert (
+        paired_comparison(same_columns, incumbent)["decision"] == "retained incumbent"
+    )
+    lower_precision = {**candidate, "p_lab_50": 0.49}
+    assert (
+        paired_comparison(lower_precision, incumbent)["decision"]
+        == "retained incumbent"
+    )
 
 
 @pytest.mark.parametrize("periods", [tuple(range(1, 40)) + (40,)], indirect=True)
@@ -141,6 +207,12 @@ def test_configured_runner_uses_export_dedupes_and_repeats_the_a1_mask(
     monkeypatch.setattr(Pipeline, "fit", unexpected)
     assert ablation.main(args) == 0
     assert read_json(aggregate) == summary
+
+    monkeypatch.setattr(ablation, "load_development_export", unexpected)
+    assert ablation.main(["--review-results", str(aggregate)]) == 0
+    reviewed = aggregate.with_suffix(".review.md").read_text(encoding="utf-8")
+    assert "## Original decisions" in reviewed
+    assert "## Decision rule review" in reviewed
 
     document["scenarios"]["S1"].append({"features": "T2", "against": "T0"})
     plan.write_text(json.dumps(document), encoding="utf-8")
