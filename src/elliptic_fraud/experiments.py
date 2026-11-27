@@ -1,7 +1,11 @@
 """Run fixed T0 baselines on cached development windows."""
 
+import argparse
 import os
 import statistics
+import subprocess
+import sys
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
@@ -28,8 +32,18 @@ TRACKING_EXPERIMENT = "Elliptic S1 development"
 
 
 def feature_code_sha256() -> str:
-    """Fingerprint the T0 feature builder."""
-    return file_digest(Path(__file__).with_name("model_features.py"))
+    """Fingerprint the code that parses, validates and builds T0 inputs."""
+    return snapshot_digest(
+        {
+            name: file_digest(Path(__file__).with_name(name))
+            for name in (
+                "ingestion.py",
+                "schema.py",
+                "validation.py",
+                "model_features.py",
+            )
+        }
+    )
 
 
 def development_cache_path(snapshot_sha: str) -> Path:
@@ -50,8 +64,8 @@ def cache_development(window: Window, snapshot: dict) -> Path:
     validate_development(window)
     if list(window.features.columns) != list(FEATURE_AUDIT):
         raise DatasetError("Development cache requires the frozen T0 feature order.")
-    root = development_cache_path(snapshot["snapshot_sha256"])
-    if not root.resolve().is_relative_to(Path("data/processed").absolute()):
+    root = development_cache_path(snapshot["snapshot_sha256"]).resolve()
+    if not root.is_relative_to(Path("data/processed").resolve()):
         raise DatasetError(
             "Development cache must be inside the local processed-data directory."
         )
@@ -175,6 +189,8 @@ def run_baseline_folds(
     folds = development_folds(embargo)
     development, manifest = _load_development(development_cache)
     output_dir.mkdir(parents=True, exist_ok=True)
+    implementation_sha = implementation_digest()
+    environment = evaluation_environment()
     report_rows = []
     parameters = {
         "logistic_regression": {"preprocessing": "StandardScaler", **LOGISTIC_PARAMS},
@@ -193,6 +209,8 @@ def run_baseline_folds(
                 "feature_set": "T0",
                 "feature_version": FEATURE_VERSION,
                 "feature_code_sha256": manifest["feature_code_sha256"],
+                "implementation_sha256": implementation_sha,
+                "environment": environment,
                 "family": family,
                 "params": parameters[family],
                 "seed": SEED,
@@ -220,8 +238,8 @@ def run_baseline_folds(
                         "config_sha256": digest,
                         "config": config,
                         "git_commit": git_commit,
-                        "implementation_sha256": implementation_digest(),
-                        "environment": evaluation_environment(),
+                        "implementation_sha256": implementation_sha,
+                        "environment": environment,
                         "label_policy": "1 illicit, 2 licit, unknown unlabelled",
                         "feature_availability": FEATURE_AUDIT,
                         "train": train.support(),
@@ -269,3 +287,46 @@ def run_baseline_folds(
             write_json(temporary, summary)
             temporary.replace(destination)
     return destination
+
+
+def _clean_git_revision() -> str:
+    try:
+        revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True)
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain", "--untracked-files=normal"], text=True
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise DatasetError(
+            "Run the baseline command in a committed Git checkout."
+        ) from error
+    if status.strip():
+        raise DatasetError(
+            "Commit or stash working tree changes before running baselines."
+        )
+    return revision.strip()
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run development-only walk-forward baselines from a clean checkout."""
+    parser = argparse.ArgumentParser(description=main.__doc__)
+    parser.add_argument(
+        "--snapshot-sha", required=True, help="SHA-256 of the cached dataset snapshot"
+    )
+    parser.add_argument(
+        "--output-dir", type=Path, default=Path("artifacts/experiments")
+    )
+    parser.add_argument("--embargo", type=int, choices=(0, 2), default=0)
+    args = parser.parse_args(argv)
+    try:
+        revision = _clean_git_revision()
+        output = run_baseline_folds(
+            development_cache_path(args.snapshot_sha),
+            args.output_dir,
+            git_commit=revision,
+            embargo=args.embargo,
+        )
+    except (DatasetError, OSError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return 1
+    print(f"Walk-forward evaluation written to {output}")
+    return 0
