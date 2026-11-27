@@ -33,6 +33,29 @@ Report illicit-class average precision on the labelled test subset, plus precisi
 
 For a review budget of *k* transactions per time step, rank all eligible transactions and take up to *k*. Report confirmed illicit hits, the count of reviewed transactions with unknown labels, and the proportion of known illicit transactions captured. Mark ratios with an empty denominator as undefined. This keeps the queue realistic even when only some outcomes are observable.
 
+## Predictive evaluation protocol
+
+Train and compare models only on steps **1–39**. Use four expanding folds with the following inclusive boundaries. The optional embargo drops the last two training steps in each fold and preserves the validation range. When a model uses early stopping, reserve the final three steps of the resulting training range as an inner validation window. The fixed legacy configurations use all labelled training rows in each fold and have no early stopping.
+
+| Fold | Training | Validation | Inner early stopping, no embargo |
+| --- | --- | --- | --- |
+| F1 | 1–19 | 20–24 | 17–19 |
+| F2 | 1–24 | 25–29 | 22–24 |
+| F3 | 1–29 | 30–34 | 27–29 |
+| F4 | 1–34 | 35–39 | 32–34 |
+
+- **Average precision (AP)** is the sum of each increase in recall multiplied by precision at that score threshold. Trapezoidal PR-AUC integrates a linearly interpolated curve. Report scikit-learn AP. Compute pooled AP over all known labels in a window. Compute step AP separately and report its mean and sample standard deviation over steps with at least one known illicit transaction. Give each fold equal weight in the development summary. ROC-AUC requires both known classes. Brier score is the mean squared error between the predicted probability and the binary outcome on known labels. [Average precision definition](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.average_precision_score.html)
+- **Q-lab** ranks only explicitly labelled transactions within each step. For `K_lab` in `{10, 25, 50}`, precision divides illicit hits by the number reviewed, up to `K_lab`. Recall divides them by all known illicit transactions in that step. Average each ratio over the steps where it is defined. Label coverage affects the population represented by this ranking.
+- **Q-all** ranks all eligible transactions within each step. Report confirmed illicit, confirmed licit, unlabelled share and recall of known illicit cases at `K` in `{25, 50, 100}`. The operational capacity is 50 per step, with 25 and 100 as sensitivity checks. Uniform sampling without replacement has expected known illicit hits of `min(K, eligible) × known illicit / eligible` in each nonempty step. Sum these expectations and divide observed known illicit hits by the resulting total. Unknown outcomes prevent measuring overall queue precision.
+- **Ties** use the existing deterministic hash order for both rankings. For Q-all, count scores strictly above the cutoff, the full tie group at the cutoff and how many of the tied transactions fit in the queue. A tie spans the cutoff when at least one transaction with the same cutoff score remains outside the queue. Undefined values are stored as JSON `null`.
+- **Uncertainty** uses 1,000 whole-step bootstrap draws with seed 42. Resample steps with replacement and recompute the macro mean for AP and Q-lab precision. Report the 2.5th and 97.5th percentiles and the number of draws where the metric is defined. These descriptive intervals treat steps as exchangeable and do not model temporal dependence. Compare candidates using paired differences on shared folds. Report pooled AP on steps 40–42 and 43–49 separately as a descriptive diagnostic when the window spans both.
+
+The development baseline fits fresh models using T0 confirmation-time ancestry and the original logistic regression and XGBoost configurations. The fixed 0.5 threshold in fold reports is descriptive. The frozen legacy model retains its original validation-selected threshold for the re-measurement. The API scenario (S1) is restricted to ancestry tiers T0/T1. A1 applies only to end-of-step batch triage (S2), whose future results will be labelled conditional on A1.
+
+The development cache contains steps 1–39 only. Its key includes the dataset fingerprint, T0 version and the code for ingestion, validation, schema and feature construction. From a clean Git checkout, run `elliptic-baseline-folds --snapshot-sha <sha256>` against an existing compatible cache. Add `--embargo 2` for the sensitivity check. The command records the Git revision and reuses fold reports and MLflow runs only when the experiment configuration, implementation digest and numerical environment match.
+
+Fold reports are written under `artifacts/experiments/<config-hash>/` and logged to a separate local MLflow store under `artifacts/experiments/tracking/`. An authorised holdout replay publishes its aggregate-only `evaluation.json` in a new directory under `artifacts/evaluations/` before attempting optional cache creation. If the cache write fails, the published report remains available. Record each authorised holdout access in the [test access ledger](experiments/test-ledger.md). Follow the [pre-registration template](experiments/preregistration.md) before final evaluation.
+
 ## Recorded local result
 
 The 25 November 2026 run used the full local Elliptic release, seed 42, Python 3.12.14, scikit-learn 1.7.2 and XGBoost 3.1.2. The upstream Kaggle version number was unavailable. The manifest identifies the input snapshot by SHA-256 (`903ac5dfcabafb86638bbceddef49530bdad2743c6cfe71a7d1c78bf0da9f043`) and records the hash of each original CSV.
@@ -46,3 +69,49 @@ The 25 November 2026 run used the full local Elliptic release, seed 42, Python 3
 Validation AP was **0.1370** for logistic regression and **0.2025** for XGBoost. XGBoost advanced to the final test with a validation-selected score threshold of **0.168804** (rounded). On the labelled test subset its AP was **0.0882**. A constant score on the same subset gives **0.0569**. Applying the frozen threshold yielded 328 true positives, 3,227 false positives, 308 false negatives and 7,321 true negatives. Precision was **9.23%**, recall **51.57%** and F1 **0.1565**.
 
 The separate end-of-step ranking selected 500 of the 46,647 eligible transactions. These 500 contained **5 known illicit**, **39 known licit** and **456 unlabelled** transactions. The queue captured **0.79% of the 636 known illicit cases**. The 456 unknown outcomes prevent measuring the queue's overall precision. Future comparisons should continue tuning within the development windows and disclose any reuse of this test period.
+
+### Legacy re-measurement, 27 November 2026
+
+The [ledger](experiments/test-ledger.md) records a single re-measurement of the frozen T0 XGBoost on steps 40–49. The report reproduced pooled AP **0.08823516261360626**, the operating point (**328 TP, 3227 FP, 308 FN, 7321 TN**) and the number of confirmed illicit cases in the top-50 queue. The model's scores also matched the saved batch replay exactly.
+
+Mean step AP was **0.116532** (sample SD 0.093125, 95% bootstrap interval 0.062393–0.171766). ROC-AUC was **0.625770** and Brier score was **0.056860**. Pooled AP was 0.199342 for steps 40–42 and 0.028190 for steps 43–49. The split is descriptive.
+
+| Q-lab capacity | Mean step precision | Mean step recall | 95% bootstrap interval for precision |
+| ---: | ---: | ---: | ---: |
+| 10 | 0.100000 | 0.063477 | 0.040000–0.160000 |
+| 25 | 0.096000 | 0.073420 | 0.024000–0.176000 |
+| 50 | 0.096000 | 0.096397 | 0.019950–0.180000 |
+
+| Q-all capacity | Reviewed | Confirmed illicit | Confirmed licit | Unlabelled | Recall of known illicit | Random expected hits | Observed / expected | Steps with ties spanning the cutoff |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 25 | 250 | 2 | 22 | 226 (90.4%) | 0.003145 | 3.262781 | 0.612974 | 10 |
+| 50 | 500 | 5 | 39 | 456 (91.2%) | 0.007862 | 6.525561 | 0.766218 | 10 |
+| 100 | 1000 | 14 | 97 | 889 (88.9%) | 0.022013 | 13.051122 | 1.072705 | 10 |
+
+At the operational capacity of 50 per step, the queue recovered **5 of 636** known illicit cases. The cutoff tie spanned the queue boundary in every step, with 7 steps containing a cutoff group of more than 500 transactions. The deterministic hash order decided which tied cases filled the remaining slots in those groups.
+
+| Step | AP | Strictly above the top-50 cutoff | Tied at cutoff | Tied and reviewed |
+| ---: | ---: | ---: | ---: | ---: |
+| 40 | 0.160165 | 47 | 16 | 3 |
+| 41 | 0.239635 | 1 | 1149 | 49 |
+| 42 | 0.203043 | 4 | 1484 | 46 |
+| 43 | 0.018380 | 40 | 693 | 10 |
+| 44 | 0.054823 | 27 | 24 | 23 |
+| 45 | 0.003738 | 7 | 961 | 43 |
+| 46 | 0.251603 | 2 | 804 | 48 |
+| 47 | 0.026254 | 41 | 1173 | 9 |
+| 48 | 0.086124 | 12 | 532 | 38 |
+| 49 | 0.121554 | 33 | 44 | 17 |
+
+## Walk-forward reference on development data
+
+Both T0 configurations were fit independently in each of the four folds with no embargo. All eight fits used the development-only cache and completed in local MLflow. The optional embargo is covered by synthetic tests. These measurements establish a reference on steps 1–39 for future comparisons.
+
+| Fold | Logistic regression, mean step AP | XGBoost, mean step AP |
+| --- | ---: | ---: |
+| F1 | 0.141449 | 0.199577 |
+| F2 | 0.234714 | 0.249751 |
+| F3 | 0.162250 | 0.250149 |
+| F4 | 0.168463 | 0.169949 |
+| Mean over folds | 0.176719 | 0.217357 |
+| Sample SD over folds | 0.040352 | 0.039532 |
