@@ -1,9 +1,12 @@
 """Aggregate descriptive statistics for a validated Elliptic dataset."""
 
 from dataclasses import dataclass
+from math import ceil
 
+import numpy as np
 import pandas as pd
 
+from .folds import DEV_STEPS
 from .ingestion import EllipticDataset
 from .schema import (
     CLASS_NAMES,
@@ -11,6 +14,7 @@ from .schema import (
     FEATURE_COLUMNS,
     FEATURE_SCHEMA,
     TIME_STEPS,
+    DatasetError,
 )
 
 
@@ -110,3 +114,55 @@ def feature_statistics(transactions: pd.DataFrame) -> pd.DataFrame:
     stats.index.name = "feature"
     stats["count"] = stats["count"].astype(int)
     return stats
+
+
+def a1_probe(dataset: EllipticDataset, train: tuple[int, int]) -> dict:
+    """Rank anonymous columns by absolute partial Spearman on fold training nodes."""
+    first, last = train
+    if not DEV_STEPS[0] <= first <= last <= DEV_STEPS[1]:
+        raise DatasetError("The A1 probe requires a development training window.")
+    rows = dataset.transactions
+    if not rows["time_step"].between(*DEV_STEPS).all():
+        raise DatasetError("The A1 probe accepts development-only inputs.")
+    rows = rows.loc[rows["time_step"].between(first, last)].set_index("tx_id")
+    if rows.empty:
+        raise DatasetError("The A1 probe training window is empty.")
+    edges = dataset.edges
+    edges = edges.loc[edges["target_id"].isin(rows.index)].drop_duplicates()
+    if not edges["source_id"].isin(rows.index).all():
+        raise DatasetError("The A1 probe received a funding edge outside training.")
+
+    incoming = edges["target_id"].value_counts().reindex(rows.index, fill_value=0)
+    outgoing = edges["source_id"].value_counts().reindex(rows.index, fill_value=0)
+    control = incoming.rank().to_numpy()
+    control -= control.mean()
+    variance = float(np.sum(control * control))
+
+    def residual_rank(values: pd.Series) -> np.ndarray:
+        ranked = values.rank().to_numpy()
+        ranked -= ranked.mean()
+        if variance:
+            ranked -= float(np.sum(ranked * control)) / variance * control
+        return ranked
+
+    out_residual = residual_rank(outgoing)
+    out_norm = np.sqrt(np.sum(out_residual**2))
+    coefficients = {}
+    for column in FEATURE_COLUMNS:
+        residual = residual_rank(rows[column])
+        denominator = out_norm * np.sqrt(np.sum(residual**2))
+        coefficients[column] = (
+            float(np.clip(np.sum(residual * out_residual) / denominator, -1, 1))
+            if denominator > np.finfo(float).eps
+            else None
+        )
+    ordered = sorted(
+        (column for column, value in coefficients.items() if value is not None),
+        key=lambda column: (-abs(coefficients[column]), column),
+    )
+    return {
+        "train": list(train),
+        "transactions": len(rows),
+        "partial_spearman": coefficients,
+        "flagged": ordered[: ceil(0.05 * len(ordered))],
+    }
