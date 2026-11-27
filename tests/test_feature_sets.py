@@ -12,6 +12,7 @@ from elliptic_fraud.model_features import (
     get_feature_set,
     scoring_features,
 )
+from elliptic_fraud.runs import file_digest, read_json
 from elliptic_fraud.schema import FEATURE_COLUMNS, DatasetError
 
 
@@ -88,6 +89,19 @@ def test_graph_tiers_measure_distinct_ancestors_descendants_and_parents(
     assert not parent.loc["5"].any()
 
 
+def test_parent_presence_distinguishes_real_zero_values_from_absent_groups(
+    step_graph: EllipticDataset,
+) -> None:
+    step_graph.transactions.loc[
+        step_graph.transactions["tx_id"].eq("1"), "feature_001"
+    ] = 0
+    features, _ = build_feature_set(step_graph, get_feature_set("T2agg", "S2"), 1, 1)
+    assert list(features.loc[["5", "2"], "parent_mean_feature_001"]) == [0, 0]
+    assert list(features.loc[["5", "2"], "has_parents"]) == [0, 1]
+    assert list(features.loc[["2", "4"], "grandparent_mean_feature_001"]) == [0, 0]
+    assert list(features.loc[["2", "4"], "has_grandparents"]) == [0, 1]
+
+
 @pytest.mark.parametrize(
     ("scenario", "name"),
     [
@@ -135,24 +149,94 @@ def test_s1_is_invariant_to_appended_descendants(
 def test_cache_reuses_the_registered_snapshot_and_excludes_holdout(
     step_graph: EllipticDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.chdir(tmp_path)
     cache = feature_cache.cached_development_features
+    fingerprint = feature_cache.development_snapshot_digest
+    snapshot = fingerprint(step_graph)
     t0, t1 = get_feature_set("T0", "S1"), get_feature_set("T1", "S1")
-    expected, expected_steps = cache(step_graph, "a" * 64, t0)
-    cache(step_graph, "a" * 64, t1)
-    cache(step_graph, "b" * 64, t0)
-    cache(step_graph, "a" * 64, get_feature_set("T0", "S2"))
-    assert len(list(Path("data/processed").glob("*/*/manifest.json"))) == 4
+    expected, expected_steps = cache(step_graph, snapshot, t0, cache_root=tmp_path)
+    cache(step_graph, snapshot, t1, cache_root=tmp_path)
+    without_last_edge = EllipticDataset(
+        step_graph.transactions, step_graph.edges.iloc[:-1]
+    )
+    cache(without_last_edge, fingerprint(without_last_edge), t0, cache_root=tmp_path)
+    cache(step_graph, snapshot, get_feature_set("T0", "S2"), cache_root=tmp_path)
+    assert len(list(tmp_path.glob("*/*/manifest.json"))) == 4
 
     def unexpected_build(*args: object) -> None:
         pytest.fail("A cached or prohibited development window reached the builder.")
 
     monkeypatch.setattr(feature_cache, "build_feature_set", unexpected_build)
-    actual, steps = cache(step_graph, "a" * 64, t0)
+    actual, steps = cache(step_graph, snapshot, t0, cache_root=tmp_path)
     pd.testing.assert_frame_equal(expected, actual, check_exact=True)
     pd.testing.assert_series_equal(expected_steps, steps)
     future = EllipticDataset(
         pd.concat([step_graph.transactions, _transactions(["8"], 40)]), step_graph.edges
     )
     with pytest.raises(DatasetError, match="development transactions"):
-        cache(future, "a" * 64, t0)
+        cache(future, snapshot, t0, cache_root=tmp_path)
+
+
+def test_feature_cache_verifies_predictor_values_before_reuse(
+    step_graph: EllipticDataset, tmp_path: Path
+) -> None:
+    feature_set = get_feature_set("T2", "S2")
+    fingerprint = feature_cache.development_snapshot_digest
+    cache = feature_cache.cached_development_features
+    snapshot = fingerprint(step_graph)
+    original, steps = cache(step_graph, snapshot, feature_set, cache_root=tmp_path)
+    modified = EllipticDataset(step_graph.transactions.copy(), step_graph.edges)
+    modified.transactions.loc[0, "feature_001"] = np.nextafter(
+        modified.transactions.loc[0, "feature_001"], np.inf
+    )
+    with pytest.raises(DatasetError, match="SHA-256 does not match"):
+        cache(modified, snapshot, feature_set, cache_root=tmp_path)
+    modified_snapshot = fingerprint(modified)
+    assert modified_snapshot != snapshot
+    rebuilt, rebuilt_steps = cache(
+        modified, modified_snapshot, feature_set, cache_root=tmp_path
+    )
+    assert original.iloc[0, 0] != rebuilt.iloc[0, 0]
+    pd.testing.assert_series_equal(steps, rebuilt_steps)
+
+
+@pytest.mark.parametrize("damage", ["missing", "corrupt"])
+def test_feature_cache_rebuilds_missing_or_corrupt_payloads(
+    damage: str, step_graph: EllipticDataset, tmp_path: Path
+) -> None:
+    snapshot = feature_cache.development_snapshot_digest(step_graph)
+    feature_set = get_feature_set("T0", "S1")
+    cache = feature_cache.cached_development_features
+    expected, expected_steps = cache(
+        step_graph, snapshot, feature_set, cache_root=tmp_path
+    )
+    (payload,) = tmp_path.glob("*/*/features.joblib")
+    if damage == "missing":
+        payload.unlink()
+    else:
+        payload.write_bytes(b"corrupt")
+    actual, actual_steps = cache(step_graph, snapshot, feature_set, cache_root=tmp_path)
+    pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+    pd.testing.assert_series_equal(actual_steps, expected_steps)
+    manifest = read_json(payload.with_name("manifest.json"))
+    assert manifest["cache_sha256"] == file_digest(payload)
+
+
+def test_feature_cache_uses_an_explicit_root_across_working_directories(
+    step_graph: EllipticDataset, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    root = tmp_path / "project" / "data" / "processed"
+    snapshot = feature_cache.development_snapshot_digest(step_graph)
+    feature_set = get_feature_set("T0", "S1")
+    cache = feature_cache.cached_development_features
+    monkeypatch.chdir(first)
+    expected, _ = cache(step_graph, snapshot, feature_set, cache_root=root)
+    monkeypatch.chdir(second)
+    actual, _ = cache(step_graph, snapshot, feature_set, cache_root=root)
+    pd.testing.assert_frame_equal(actual, expected, check_exact=True)
+    assert len(list(root.glob("*/*/manifest.json"))) == 1
+    assert not any(first.iterdir()) and not any(second.iterdir())
+    with pytest.raises(DatasetError, match="absolute path"):
+        cache(step_graph, snapshot, feature_set, cache_root=Path("data/processed"))

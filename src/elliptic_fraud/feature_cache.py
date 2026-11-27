@@ -1,5 +1,7 @@
-"""Cache versioned predictor matrices built from development-only inputs."""
+"""Cache versioned predictor matrices built from verified development inputs."""
 
+import hashlib
+import json
 from pathlib import Path
 
 import joblib
@@ -19,15 +21,27 @@ from .runs import (
 from .schema import DatasetError
 
 
-def cached_development_features(
-    dataset: EllipticDataset, snapshot_sha: str, feature_set: FeatureSet
-) -> tuple[pd.DataFrame, pd.Series]:
-    """Reuse an exact feature contract and source fingerprint for steps 1–39."""
-    if len(snapshot_sha) != 64 or any(
-        char not in "0123456789abcdef" for char in snapshot_sha
-    ):
-        raise DatasetError("Expected a SHA-256 snapshot identifier.")
-    steps = dataset.transactions.set_index("tx_id")["time_step"]
+def _frame_digest(frame: pd.DataFrame) -> str:
+    digest = hashlib.sha256(
+        json.dumps(
+            list(zip(frame.columns, frame.dtypes.astype(str), strict=True))
+        ).encode("utf-8")
+    )
+    for _, column in frame.items():
+        values = column.to_numpy()
+        if values.dtype.kind in "biuf":
+            # Preserve all numeric bits independently of the host byte order.
+            content = values.astype(
+                values.dtype.newbyteorder("<"), copy=False
+            ).tobytes()
+        else:
+            content = column.astype("string").to_json(orient="values").encode("utf-8")
+        digest.update(hashlib.sha256(content).digest())
+    return digest.hexdigest()
+
+
+def _development_snapshot(dataset: EllipticDataset) -> tuple[str, pd.Series]:
+    steps = dataset.transactions[["tx_id", "time_step"]].set_index("tx_id")["time_step"]
     if (
         steps.empty
         or not steps.index.is_unique
@@ -39,6 +53,35 @@ def cached_development_features(
         raise DatasetError(
             "Feature caching requires only aligned development transactions and edges from steps 1–39."
         )
+    digest = snapshot_digest(
+        {
+            "transactions": _frame_digest(dataset.transactions),
+            "edges": _frame_digest(dataset.edges),
+        }
+    )
+    return digest, steps
+
+
+def development_snapshot_digest(dataset: EllipticDataset) -> str:
+    """Fingerprint the development frames, including their values, dtypes and order."""
+    return _development_snapshot(dataset)[0]
+
+
+def cached_development_features(
+    dataset: EllipticDataset,
+    snapshot_sha: str,
+    feature_set: FeatureSet,
+    *,
+    cache_root: Path,
+) -> tuple[pd.DataFrame, pd.Series]:
+    """Reuse predictors for a verified development snapshot under an explicit root."""
+    if not cache_root.is_absolute():
+        raise DatasetError("The feature cache root must be an absolute path.")
+    verified_sha, steps = _development_snapshot(dataset)
+    if snapshot_sha != verified_sha:
+        raise DatasetError(
+            "The development snapshot SHA-256 does not match the supplied data."
+        )
     # Compose only registered tiers, so identical manifests cannot name different builders.
     registered = get_feature_set(
         feature_set.name, feature_set.scenario, feature_set.version
@@ -46,12 +89,12 @@ def cached_development_features(
     if registered.columns != feature_set.columns:
         raise DatasetError("The cache feature order must match the registry.")
     config = {
-        "snapshot_sha256": snapshot_sha,
+        "snapshot_sha256": verified_sha,
         "feature_set": registered.manifest(),
         "implementation_sha256": implementation_digest(),
     }
-    root = Path("data/processed").resolve()
-    directory = (root / snapshot_sha / f"features-{snapshot_digest(config)}").resolve()
+    root = cache_root.resolve()
+    directory = (root / verified_sha / f"features-{snapshot_digest(config)}").resolve()
     if not directory.is_relative_to(root):
         raise DatasetError(
             "Feature caches must be inside the processed-data directory."
@@ -62,20 +105,23 @@ def cached_development_features(
         payload = directory / "features.joblib"
         if manifest.exists():
             stored = read_json(manifest)
-            if stored.get("config") != config or file_digest(payload) != stored.get(
-                "cache_sha256"
-            ):
+            if stored.get("config") != config:
                 raise DatasetError("The feature cache does not match its manifest.")
-            features, cached_steps = joblib.load(payload)
-            if (
-                not cached_steps.equals(steps)
-                or not features.index.equals(steps.index)
-                or tuple(features.columns) != registered.columns
-            ):
-                raise DatasetError(
-                    "The feature cache does not match the requested development window."
-                )
-            return features, cached_steps
+            try:
+                digest = file_digest(payload)
+            except FileNotFoundError:
+                digest = None
+            if digest is not None and digest == stored.get("cache_sha256"):
+                features, cached_steps = joblib.load(payload)
+                if (
+                    not cached_steps.equals(steps)
+                    or not features.index.equals(steps.index)
+                    or tuple(features.columns) != registered.columns
+                ):
+                    raise DatasetError(
+                        "The feature cache does not match the requested development window."
+                    )
+                return features, cached_steps
         features, cached_steps = build_feature_set(dataset, registered, *DEV_STEPS)
         temporary = directory / ".features.partial"
         joblib.dump((features, cached_steps), temporary, compress=3)

@@ -28,7 +28,7 @@ PARENT_COLUMNS = tuple(
     f"{stat}_{feature}"
     for stat in ("parent_mean", "parent_max", "parent_std", "grandparent_mean")
     for feature in LOCAL_COLUMNS
-)
+) + ("has_parents", "has_grandparents")
 
 
 def _parent_graph(ids: pd.Index, edges: pd.DataFrame) -> dict[str, set[str]]:
@@ -164,8 +164,10 @@ def parent_aggregates(nodes: pd.DataFrame, edges: pd.DataFrame) -> pd.DataFrame:
             rows[i, :width] = direct.mean(axis=0)
             rows[i, width : 2 * width] = direct.max(axis=0)
             rows[i, 2 * width : 3 * width] = direct.std(axis=0)
+            rows[i, -2] = 1
         upstream = _grandparents(parents, tx_id)
         if upstream:
             second = local[sorted(ids[ancestor] for ancestor in upstream)]
-            rows[i, 3 * width :] = second.mean(axis=0)
+            rows[i, 3 * width : 4 * width] = second.mean(axis=0)
+            rows[i, -1] = 1
     return pd.DataFrame(rows, index=nodes.index, columns=PARENT_COLUMNS)
