@@ -54,6 +54,8 @@ The development baseline fits fresh models using T0 confirmation-time ancestry a
 
 See the [versioned feature and inference contracts](feature-sets.md) for the tiers, source column boundaries, and batch explanation units.
 
+Phases 3 and 4 read only the verified development export at `data/processed/development/`. The [phase 3 ablation report](experiments/phase3-ablation.md) records the fold comparisons, tier decisions and A1 sensitivity. The [test ledger](experiments/test-ledger.md) records the authorised export access.
+
 The development cache contains steps 1–39 only. Its key includes the dataset fingerprint, T0 version and the code for ingestion, validation, schema and feature construction. From a clean Git checkout, run `elliptic-baseline-folds --snapshot-sha <sha256>` against an existing compatible cache. Add `--embargo 2` for the sensitivity check. The command records the Git revision and reuses fold reports and MLflow runs only when the experiment configuration, implementation digest and numerical environment match.
 
 Fold reports are written under `artifacts/experiments/<config-hash>/` and logged to a separate local MLflow store under `artifacts/experiments/tracking/`. An authorised holdout replay publishes its aggregate-only `evaluation.json` in a new directory under `artifacts/evaluations/` before attempting optional cache creation. If the cache write fails, the published report remains available. Record each authorised holdout access in the [test access ledger](experiments/test-ledger.md). Follow the [pre-registration template](experiments/preregistration.md) before final evaluation.
