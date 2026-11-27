@@ -14,7 +14,7 @@ from .explanations import explain_scores, plot_importance
 from .inference import load_frozen_model, predict_scores
 from .ingestion import load_scoring_graph
 from .model_evaluation import rank_transactions
-from .model_features import FEATURE_AUDIT, scoring_features
+from .model_features import build_feature_set, scoring_features
 from .runs import (
     file_digest,
     file_state,
@@ -69,8 +69,13 @@ def score_batch(
         raise DatasetError("Invalid review budget or seed in the training manifest.")
     frozen = load_frozen_model(model_run, manifest)
     model, threshold = frozen.pipeline, frozen.threshold
-    graph = load_scoring_graph(data_dir)
-    features, steps = scoring_features(graph, first, last)
+    feature_set = frozen.feature_set
+    if feature_set is None:
+        graph = load_scoring_graph(data_dir)
+        features, steps = scoring_features(graph, first, last)
+    else:
+        graph = load_scoring_graph(data_dir, feature_set.required_columns)
+        features, steps = build_feature_set(graph, feature_set, first, last)
     input_hashes = {path.name: file_digest(path) for path in paths}
     training_manifest_hash = file_digest(manifest_path)
     if before != file_state([manifest_path, *paths]):
@@ -80,7 +85,10 @@ def score_batch(
     ranked["above_threshold"] = ranked["risk_score"].ge(threshold)
     ranked["in_review_queue"] = ranked["review_rank"].le(budget)
 
-    contributions, base, residual = explain_scores(model, features, scores)
+    contributions, base, residual = explain_scores(
+        model, features, scores, family=frozen.name
+    )
+    units = "probability" if base.name == "base_probability" else "log-odds"
     importance = contributions.abs().mean().sort_values(ascending=False)
     queue = (
         ranked.loc[ranked["in_review_queue"]]
@@ -100,7 +108,7 @@ def score_batch(
         "threshold": threshold,
         "budget_per_step": budget,
         "seed": seed,
-        "features": list(FEATURE_AUDIT),
+        "features": list(features.columns),
         "scored": len(ranked),
         "above_threshold": int(ranked["above_threshold"].sum()),
         "queued": len(queue),
@@ -121,15 +129,25 @@ def score_batch(
                 "xgboost": xgboost.__version__,
             },
         },
-        "explanation_units": "log-odds",
+        "explanation_units": units,
         "mean_abs_shap": importance.to_dict(),
         "max_score_reconstruction_error": residual,
     }
+    if feature_set is not None:
+        summary["feature_set"] = feature_set.manifest()
+        if feature_set.scenario == "S2":
+            summary["availability_assumption"] = "conditional on A1"
+    if frozen.name == "lightgbm":
+        summary["environment"]["packages"]["lightgbm"] = version("lightgbm")
     with new_run(output_dir, "score") as (staging, destination):
         ranked.to_csv(staging / "scores.csv")
         queue.to_csv(staging / "review_queue.csv")
         write_json(staging / "summary.json", summary)
-        plot_importance(importance, staging / "shap_importance.png")
+        plot_path = staging / "shap_importance.png"
+        if units == "probability":
+            plot_importance(importance, plot_path, units=units)
+        else:
+            plot_importance(importance, plot_path)
     return destination
 
 

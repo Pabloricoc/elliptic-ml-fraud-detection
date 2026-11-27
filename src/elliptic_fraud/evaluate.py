@@ -214,6 +214,8 @@ def _required_fields(value: object, location: str, *keys: str) -> dict:
 
 def _legacy_metadata(manifest: dict, metrics: dict) -> tuple[dict, dict, int, int]:
     """Preflight metadata required for the replay and its exact parity checks."""
+    if manifest.get("schema_version", 1) != 1:
+        raise DatasetError("Legacy evaluation requires a version 1 model manifest.")
     _required_fields(
         manifest,
         "manifest.json",

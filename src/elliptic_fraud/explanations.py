@@ -1,10 +1,11 @@
-"""Explain the frozen Phase 2 pipelines on their positive-class log-odds scale."""
+"""Explain fitted pipelines in their native positive-class output units."""
 
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import shap
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
@@ -14,36 +15,57 @@ from .schema import DatasetError
 
 
 def explain_scores(
-    model: Pipeline, features: pd.DataFrame, scores: pd.Series
+    model: Pipeline,
+    features: pd.DataFrame,
+    scores: pd.Series,
+    *,
+    family: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, float]:
-    """Return signed SHAP contributions, base log-odds and maximum score residual."""
+    """Return signed SHAP contributions, named base values and score residual."""
     classifier = model.named_steps["classifier"]
-    if isinstance(classifier, XGBClassifier) and len(model.steps) == 1:
+    probability_units = isinstance(
+        classifier, (RandomForestClassifier, ExtraTreesClassifier)
+    )
+    if (
+        isinstance(classifier, XGBClassifier)
+        or probability_units
+        or family == "lightgbm"
+    ) and len(model.steps) == 1:
+        # For sklearn forests, the trees' raw output is the class probability.
         explainer = shap.TreeExplainer(
             classifier, feature_perturbation="tree_path_dependent", model_output="raw"
         )
         result = explainer(features)
-    elif (
-        isinstance(classifier, LogisticRegression)
-        and isinstance(model.named_steps.get("scale"), StandardScaler)
-        and len(model.steps) == 2
-    ):
-        scaler = model.named_steps["scale"]
-        # Zero in scaled space is the labelled training mean fitted by StandardScaler.
+    elif isinstance(classifier, LogisticRegression):
+        scaler = model.named_steps.get("scale")
+        if len(model.steps) == 2 and isinstance(scaler, StandardScaler):
+            # Zero in scaled space is the labelled training mean.
+            predictors = scaler.transform(features)
+        elif len(model.steps) == 1:
+            predictors = features.to_numpy()
+        else:
+            raise DatasetError("Unsupported fitted pipeline for linear explanations.")
         reference = np.zeros((1, features.shape[1]))
         explainer = shap.LinearExplainer(classifier, reference)
-        result = explainer(scaler.transform(features))
+        result = explainer(predictors)
     else:
-        raise DatasetError("Unsupported fitted pipeline for log-odds explanations.")
+        raise DatasetError("Unsupported fitted pipeline for explanations.")
 
+    values, base_values = result.values, result.base_values
+    if probability_units:
+        positive = list(model.classes_).index(1)
+        values, base_values = values[:, :, positive], base_values[:, positive]
     contributions = pd.DataFrame(
-        result.values, index=features.index, columns=features.columns, dtype="float64"
+        values, index=features.index, columns=features.columns, dtype="float64"
     )
     base = pd.Series(
-        result.base_values, index=features.index, dtype="float64", name="base_log_odds"
+        base_values,
+        index=features.index,
+        dtype="float64",
+        name="base_probability" if probability_units else "base_log_odds",
     )
     margin = base.to_numpy() + contributions.to_numpy().sum(axis=1)
-    reconstructed = np.exp(-np.logaddexp(0, -margin))
+    reconstructed = margin if probability_units else np.exp(-np.logaddexp(0, -margin))
     residual = float(
         np.max(np.abs(reconstructed - scores.loc[features.index].to_numpy()))
     )
@@ -54,7 +76,9 @@ def explain_scores(
     return contributions, base, residual
 
 
-def plot_importance(importance: pd.Series, path: Path) -> None:
+def plot_importance(
+    importance: pd.Series, path: Path, *, units: str = "log-odds"
+) -> None:
     """Plot aggregate mean absolute SHAP values across all scored transactions."""
     from matplotlib.backends.backend_agg import FigureCanvasAgg
     from matplotlib.figure import Figure
@@ -67,7 +91,7 @@ def plot_importance(importance: pd.Series, path: Path) -> None:
         [name.replace("_", " ") for name in ordered.index], ordered, color="#006b86"
     )
     ax.set(
-        xlabel="Mean absolute SHAP value (log-odds)",
+        xlabel=f"Mean absolute SHAP value ({units})",
         title="Feature contributions across the scored batch",
     )
     figure.savefig(path, dpi=150)
