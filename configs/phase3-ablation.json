@@ -1,0 +1,16 @@
+{
+  "scenarios": {
+    "S1": [
+      {"features": "T0", "against": null},
+      {"features": "T1", "against": "T0"}
+    ],
+    "S2": [
+      {"features": "T1b", "against": null},
+      {"features": "T2", "against": "T1b"},
+      {"features": "T1b+T2", "against": "T1b"},
+      {"features": "T2agg+T2", "against": "T2"},
+      {"features": "T1b+T2+T3", "against": "T1b+T2"},
+      {"features": "T1b+T2+T2agg+T3", "against": "T1b+T2+T3"}
+    ]
+  }
+}

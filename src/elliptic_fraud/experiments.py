@@ -115,7 +115,8 @@ def _load_development(root: Path) -> tuple[Window, dict]:
     return window, manifest
 
 
-def _record_mlflow(output_dir: Path, report: dict) -> str:
+def record_fold_mlflow(output_dir: Path, report: dict) -> str:
+    """Track one aggregate fold report in its scenario's local experiment."""
     # Use a separate SQLite database and aggregate artifacts for development.
     os.environ.setdefault("MLFLOW_DISABLE_TELEMETRY", "true")
     from mlflow import MlflowClient
@@ -124,14 +125,19 @@ def _record_mlflow(output_dir: Path, report: dict) -> str:
     tracking.mkdir(parents=True, exist_ok=True)
     tracking_uri = f"sqlite:///{(tracking / 'mlflow.db').as_posix()}"
     config_hash = report["config_sha256"]
+    name = (
+        TRACKING_EXPERIMENT
+        if report["config"]["scenario"] == "S1"
+        else "Elliptic S2 development"
+    )
     with FileLock(tracking / ".tracking.lock"):
         client = MlflowClient(tracking_uri=tracking_uri, registry_uri=tracking_uri)
-        experiment = client.get_experiment_by_name(TRACKING_EXPERIMENT)
+        experiment = client.get_experiment_by_name(name)
         experiment_id = (
             experiment.experiment_id
             if experiment
             else client.create_experiment(
-                TRACKING_EXPERIMENT, artifact_location=(tracking / "artifacts").as_uri()
+                name, artifact_location=(tracking / "artifacts").as_uri()
             )
         )
         for previous in client.search_runs(
@@ -254,7 +260,7 @@ def run_baseline_folds(
                     raise DatasetError(
                         "A saved fold report does not match its configuration."
                     )
-            run_id = _record_mlflow(output_dir, report)
+            run_id = record_fold_mlflow(output_dir, report)
             report_rows.append(
                 {
                     "model": family,
@@ -289,7 +295,8 @@ def run_baseline_folds(
     return destination
 
 
-def _clean_git_revision() -> str:
+def clean_git_revision() -> str:
+    """Read the current revision and reject uncommitted changes."""
     try:
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True)
         status = subprocess.check_output(
@@ -318,7 +325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--embargo", type=int, choices=(0, 2), default=0)
     args = parser.parse_args(argv)
     try:
-        revision = _clean_git_revision()
+        revision = clean_git_revision()
         output = run_baseline_folds(
             development_cache_path(args.snapshot_sha),
             args.output_dir,
