@@ -9,10 +9,12 @@ from lightgbm import LGBMClassifier
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 from xgboost import XGBClassifier
 
 from elliptic_fraud.api import create_app
 from elliptic_fraud.evaluate import evaluate_legacy
+from elliptic_fraud.explanations import explain_scores
 from elliptic_fraud.inference import load_frozen_model, predict_scores
 from elliptic_fraud.ingestion import EllipticDataset, load_scoring_graph
 from elliptic_fraud.model_features import build_feature_set, get_feature_set
@@ -86,7 +88,10 @@ def test_version_two_batch_scores_and_reconstructs_each_model_family(
     features, _ = build_feature_set(graph, feature_set, 1, 3)
     labels = periods.transactions.set_index("tx_id").loc[features.index, "class"]
     known = labels.isin(["1", "2"])
-    pipeline = Pipeline([("classifier", classifier)]).fit(
+    preprocessing = (
+        [("scale", StandardScaler())] if family == "logistic_regression" else []
+    )
+    pipeline = Pipeline([*preprocessing, ("classifier", classifier)]).fit(
         features.loc[known], labels[known].eq("1").astype(int)
     )
     model_run = tmp_path / "frozen"
@@ -139,6 +144,54 @@ def test_version_two_batch_scores_and_reconstructs_each_model_family(
     manifest["feature_set"]["columns"] = list(reversed(feature_set.columns))
     with pytest.raises(DatasetError, match="feature order"):
         load_frozen_model(model_run, manifest)
+
+
+def test_linear_shap_reference_is_the_fitted_training_mean() -> None:
+    training = pd.DataFrame(
+        {"a": [2.0, 4.0, 14.0, 24.0], "b": [11.0, 12.0, 16.0, 30.0]}
+    )
+    target = [0, 0, 1, 1]
+    model = Pipeline(
+        [("scale", StandardScaler()), ("classifier", LogisticRegression())]
+    ).fit(training, target)
+    mean = training.mean().to_frame().T
+    scoring = pd.concat(
+        [mean, pd.DataFrame({"a": [120.0], "b": [180.0]})], ignore_index=True
+    )
+    contributions, base, _ = explain_scores(
+        model, scoring, predict_scores(model, scoring)
+    )
+    np.testing.assert_allclose(
+        base, model.decision_function(mean).item(), rtol=0, atol=1e-12
+    )
+    np.testing.assert_array_equal(contributions.iloc[0], [0, 0])
+
+    unscaled = Pipeline([("classifier", LogisticRegression())]).fit(training, target)
+    with pytest.raises(DatasetError, match="mean-centering StandardScaler"):
+        explain_scores(unscaled, scoring, predict_scores(unscaled, scoring))
+
+
+def test_lightgbm_shap_dispatches_by_fitted_estimator_type() -> None:
+    features = pd.DataFrame({"a": np.arange(16, dtype=float)})
+    model = Pipeline(
+        [
+            (
+                "classifier",
+                LGBMClassifier(
+                    objective="binary",
+                    n_estimators=4,
+                    min_child_samples=1,
+                    n_jobs=1,
+                    verbosity=-1,
+                ),
+            )
+        ]
+    ).fit(features, features["a"].ge(8).astype(int))
+    scores = predict_scores(model, features)
+    contributions, base, residual = explain_scores(model, features, scores)
+    assert base.name == "base_log_odds"
+    assert contributions["a"].abs().max() > 0
+    assert residual < 2e-6
 
 
 def test_implicit_and_explicit_v1_load_the_same_frozen_model(

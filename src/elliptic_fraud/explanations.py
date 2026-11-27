@@ -13,13 +13,16 @@ from xgboost import XGBClassifier
 
 from .schema import DatasetError
 
+try:
+    from lightgbm import LGBMClassifier
+except (ImportError, OSError):
+    LGBMClassifier = None
+
 
 def explain_scores(
     model: Pipeline,
     features: pd.DataFrame,
     scores: pd.Series,
-    *,
-    family: str | None = None,
 ) -> tuple[pd.DataFrame, pd.Series, float]:
     """Return signed SHAP contributions, named base values and score residual."""
     classifier = model.named_steps["classifier"]
@@ -29,7 +32,7 @@ def explain_scores(
     if (
         isinstance(classifier, XGBClassifier)
         or probability_units
-        or family == "lightgbm"
+        or (LGBMClassifier is not None and isinstance(classifier, LGBMClassifier))
     ) and len(model.steps) == 1:
         # For sklearn forests, the trees' raw output is the class probability.
         explainer = shap.TreeExplainer(
@@ -38,16 +41,18 @@ def explain_scores(
         result = explainer(features)
     elif isinstance(classifier, LogisticRegression):
         scaler = model.named_steps.get("scale")
-        if len(model.steps) == 2 and isinstance(scaler, StandardScaler):
-            # Zero in scaled space is the labelled training mean.
-            predictors = scaler.transform(features)
-        elif len(model.steps) == 1:
-            predictors = features.to_numpy()
-        else:
-            raise DatasetError("Unsupported fitted pipeline for linear explanations.")
+        if (
+            len(model.steps) != 2
+            or not isinstance(scaler, StandardScaler)
+            or not scaler.with_mean
+        ):
+            raise DatasetError(
+                "Linear explanations require a fitted, mean-centering StandardScaler."
+            )
+        # The fitted scaler maps the labelled training feature means to zero.
         reference = np.zeros((1, features.shape[1]))
         explainer = shap.LinearExplainer(classifier, reference)
-        result = explainer(predictors)
+        result = explainer(scaler.transform(features))
     else:
         raise DatasetError("Unsupported fitted pipeline for explanations.")
 

@@ -85,9 +85,7 @@ def score_batch(
     ranked["above_threshold"] = ranked["risk_score"].ge(threshold)
     ranked["in_review_queue"] = ranked["review_rank"].le(budget)
 
-    contributions, base, residual = explain_scores(
-        model, features, scores, family=frozen.name
-    )
+    contributions, base, residual = explain_scores(model, features, scores)
     units = "probability" if base.name == "base_probability" else "log-odds"
     importance = contributions.abs().mean().sort_values(ascending=False)
     queue = (
