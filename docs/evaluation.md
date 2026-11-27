@@ -67,3 +67,49 @@ The 25 November 2026 run used the full local Elliptic release, seed 42, Python 3
 Validation AP was **0.1370** for logistic regression and **0.2025** for XGBoost. XGBoost advanced to the final test with a validation-selected score threshold of **0.168804** (rounded). On the labelled test subset its AP was **0.0882**. A constant score on the same subset gives **0.0569**. Applying the frozen threshold yielded 328 true positives, 3,227 false positives, 308 false negatives and 7,321 true negatives. Precision was **9.23%**, recall **51.57%** and F1 **0.1565**.
 
 The separate end-of-step ranking selected 500 of the 46,647 eligible transactions. These 500 contained **5 known illicit**, **39 known licit** and **456 unlabelled** transactions. The queue captured **0.79% of the 636 known illicit cases**. The 456 unknown outcomes prevent measuring the queue's overall precision. Future comparisons should continue tuning within the development windows and disclose any reuse of this test period.
+
+### Legacy re-measurement, 27 November 2026
+
+The [ledger](experiments/test-ledger.md) records a single re-measurement of the frozen T0 XGBoost on steps 40–49. The report reproduced pooled AP **0.08823516261360626**, the operating point (**328 TP, 3227 FP, 308 FN, 7321 TN**) and the number of confirmed illicit cases in the top-50 queue. The model's scores also matched the saved batch replay exactly.
+
+Mean step AP was **0.116532** (sample SD 0.093125, 95% bootstrap interval 0.062393–0.171766). ROC-AUC was **0.625770** and Brier score was **0.056860**. Pooled AP was 0.199342 for steps 40–42 and 0.028190 for steps 43–49. The split is descriptive.
+
+| Q-lab capacity | Mean step precision | Mean step recall | 95% bootstrap interval for precision |
+| ---: | ---: | ---: | ---: |
+| 10 | 0.100000 | 0.063477 | 0.040000–0.160000 |
+| 25 | 0.096000 | 0.073420 | 0.024000–0.176000 |
+| 50 | 0.096000 | 0.096397 | 0.019950–0.180000 |
+
+| Q-all capacity | Reviewed | Confirmed illicit | Confirmed licit | Unlabelled | Recall of known illicit | Random expected hits | Observed / expected | Steps with ties spanning the cutoff |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 25 | 250 | 2 | 22 | 226 (90.4%) | 0.003145 | 3.262781 | 0.612974 | 10 |
+| 50 | 500 | 5 | 39 | 456 (91.2%) | 0.007862 | 6.525561 | 0.766218 | 10 |
+| 100 | 1000 | 14 | 97 | 889 (88.9%) | 0.022013 | 13.051122 | 1.072705 | 10 |
+
+At the operational capacity of 50 per step, the queue recovered **5 of 636** known illicit cases. The cutoff tie spanned the queue boundary in every step, with 7 steps containing a cutoff group of more than 500 transactions. The deterministic hash order decided which tied cases filled the remaining slots in those groups.
+
+| Step | AP | Strictly above the top-50 cutoff | Tied at cutoff | Tied and reviewed |
+| ---: | ---: | ---: | ---: | ---: |
+| 40 | 0.160165 | 47 | 16 | 3 |
+| 41 | 0.239635 | 1 | 1149 | 49 |
+| 42 | 0.203043 | 4 | 1484 | 46 |
+| 43 | 0.018380 | 40 | 693 | 10 |
+| 44 | 0.054823 | 27 | 24 | 23 |
+| 45 | 0.003738 | 7 | 961 | 43 |
+| 46 | 0.251603 | 2 | 804 | 48 |
+| 47 | 0.026254 | 41 | 1173 | 9 |
+| 48 | 0.086124 | 12 | 532 | 38 |
+| 49 | 0.121554 | 33 | 44 | 17 |
+
+## Walk-forward reference on development data
+
+Both T0 configurations were fit independently in each of the four folds with no embargo. All eight fits used the development-only cache and completed in local MLflow. The optional embargo is covered by synthetic tests. These measurements establish a reference on steps 1–39 for future comparisons.
+
+| Fold | Logistic regression, mean step AP | XGBoost, mean step AP |
+| --- | ---: | ---: |
+| F1 | 0.141449 | 0.199577 |
+| F2 | 0.234714 | 0.249751 |
+| F3 | 0.162250 | 0.250149 |
+| F4 | 0.168463 | 0.169949 |
+| Mean over folds | 0.176719 | 0.217357 |
+| Sample SD over folds | 0.040352 | 0.039532 |
