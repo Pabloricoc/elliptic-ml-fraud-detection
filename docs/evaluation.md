@@ -33,6 +33,27 @@ Report illicit-class average precision on the labelled test subset, plus precisi
 
 For a review budget of *k* transactions per time step, rank all eligible transactions and take up to *k*. Report confirmed illicit hits, the count of reviewed transactions with unknown labels, and the proportion of known illicit transactions captured. Mark ratios with an empty denominator as undefined. This keeps the queue realistic even when only some outcomes are observable.
 
+## Predictive evaluation protocol
+
+Train and compare models only on steps **1–39**. Use four expanding folds with the following inclusive boundaries. The optional embargo drops the last two training steps in each fold and preserves the validation range. When a model uses early stopping, reserve the final three steps of the resulting training range as an inner validation window. The fixed legacy configurations use all labelled training rows in each fold and have no early stopping.
+
+| Fold | Training | Validation | Inner early stopping, no embargo |
+| --- | --- | --- | --- |
+| F1 | 1–19 | 20–24 | 17–19 |
+| F2 | 1–24 | 25–29 | 22–24 |
+| F3 | 1–29 | 30–34 | 27–29 |
+| F4 | 1–34 | 35–39 | 32–34 |
+
+- **Average precision (AP)** is the sum of each increase in recall multiplied by precision at that score threshold. Trapezoidal PR-AUC integrates a linearly interpolated curve. Report scikit-learn AP. Compute pooled AP over all known labels in a window. Compute step AP separately and report its mean and sample standard deviation over steps with at least one known illicit transaction. Give each fold equal weight in the development summary. ROC-AUC requires both known classes. Brier score is the mean squared error between the predicted probability and the binary outcome on known labels. [Average precision definition](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.average_precision_score.html)
+- **Q-lab** ranks only explicitly labelled transactions within each step. For `K_lab` in `{10, 25, 50}`, precision divides illicit hits by the number reviewed, up to `K_lab`. Recall divides them by all known illicit transactions in that step. Average each ratio over the steps where it is defined. Label coverage affects the population represented by this ranking.
+- **Q-all** ranks all eligible transactions within each step. Report confirmed illicit, confirmed licit, unlabelled share and recall of known illicit cases at `K` in `{25, 50, 100}`. The operational capacity is 50 per step, with 25 and 100 as sensitivity checks. Uniform sampling without replacement has expected known illicit hits of `min(K, eligible) × known illicit / eligible` in each nonempty step. Sum these expectations and divide observed known illicit hits by the resulting total. Unknown outcomes prevent measuring overall queue precision.
+- **Ties** use the existing deterministic hash order for both rankings. For Q-all, count scores strictly above the cutoff, the full tie group at the cutoff and how many of the tied transactions fit in the queue. A tie spans the cutoff when at least one transaction with the same cutoff score remains outside the queue. Undefined values are stored as JSON `null`.
+- **Uncertainty** uses 1,000 whole-step bootstrap draws with seed 42. Resample steps with replacement and recompute the macro mean for AP and Q-lab precision. Report the 2.5th and 97.5th percentiles and the number of draws where the metric is defined. These descriptive intervals treat steps as exchangeable and do not model temporal dependence. Compare candidates using paired differences on shared folds. Report pooled AP on steps 40–42 and 43–49 separately as a descriptive diagnostic when the window spans both.
+
+The development baseline fits fresh models using T0 confirmation-time ancestry and the original logistic regression and XGBoost configurations. The fixed 0.5 threshold in fold reports is descriptive. The frozen legacy model retains its original validation-selected threshold for the re-measurement. The API scenario (S1) is restricted to ancestry tiers T0/T1. A1 applies only to end-of-step batch triage (S2), whose future results will be labelled conditional on A1.
+
+The development cache is keyed by dataset fingerprint and T0 feature-code version and contains steps 1–39 only. Fold reports are written under `artifacts/experiments/<config-hash>/` and logged to a separate local MLflow store under `artifacts/experiments/tracking/`. Holdout replay writes an aggregate-only `evaluation.json` under a new directory in `artifacts/evaluations/`. Record each authorised holdout access in the [test access ledger](experiments/test-ledger.md). Follow the [pre-registration template](experiments/preregistration.md) before final evaluation.
+
 ## Recorded local result
 
 The 25 November 2026 run used the full local Elliptic release, seed 42, Python 3.12.14, scikit-learn 1.7.2 and XGBoost 3.1.2. The upstream Kaggle version number was unavailable. The manifest identifies the input snapshot by SHA-256 (`903ac5dfcabafb86638bbceddef49530bdad2743c6cfe71a7d1c78bf0da9f043`) and records the hash of each original CSV.

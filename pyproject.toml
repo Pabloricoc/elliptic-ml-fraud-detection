@@ -34,6 +34,7 @@ dev = [
 [project.scripts]
 elliptic-check-data = "elliptic_fraud.check_data:main"
 elliptic-data = "elliptic_fraud.data_cli:main"
+elliptic-evaluate = "elliptic_fraud.evaluate:main"
 elliptic-train = "elliptic_fraud.train:main"
 elliptic-score = "elliptic_fraud.scoring:main"
 elliptic-track = "elliptic_fraud.tracking:main"
