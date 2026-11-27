@@ -7,11 +7,12 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 from xgboost import XGBClassifier
 
-from .model_features import FEATURE_AUDIT
+from .model_features import FEATURE_AUDIT, FeatureSet, get_feature_set
 from .schema import DatasetError
 
 
@@ -21,19 +22,62 @@ class FrozenModel:
     name: str
     sha256: str
     threshold: float
+    feature_set: FeatureSet | None = None
+
+
+def _version_two_contract(manifest: dict) -> FeatureSet:
+    schema = manifest.get("feature_set")
+    if (
+        not isinstance(schema, dict)
+        or not isinstance(schema.get("name"), str)
+        or not isinstance(schema.get("scenario"), str)
+        or not isinstance(manifest.get("params"), dict)
+        or not isinstance(manifest.get("fold_protocol"), dict)
+        or not manifest["fold_protocol"]
+    ):
+        raise DatasetError(
+            "Invalid version 2 feature set, model params or fold protocol."
+        )
+    feature_set = get_feature_set(
+        schema["name"], schema["scenario"], schema.get("version")
+    )
+    if schema.get("columns") != list(feature_set.columns):
+        raise DatasetError("Training manifest has an incompatible feature order.")
+    return feature_set
 
 
 def load_frozen_model(model_run: Path, manifest: dict) -> FrozenModel:
     """Verify and load a trusted local training artifact with its saved threshold."""
-    schema = manifest.get("features_in_order")
-    if not isinstance(schema, dict) or list(schema) != list(FEATURE_AUDIT):
-        raise DatasetError("Training manifest has an incompatible feature order.")
+    schema_version = manifest.get("schema_version", 1)
+    if type(schema_version) is not int or schema_version not in (1, 2):
+        raise DatasetError("Unsupported training manifest schema version.")
+    expected = {"xgboost": XGBClassifier, "logistic_regression": LogisticRegression}
+    if schema_version == 1:
+        schema = manifest.get("features_in_order")
+        if not isinstance(schema, dict) or list(schema) != list(FEATURE_AUDIT):
+            raise DatasetError("Training manifest has an incompatible feature order.")
+        feature_set = None
+        columns = list(FEATURE_AUDIT)
+        name = manifest.get("winner")
+    else:
+        feature_set = _version_two_contract(manifest)
+        columns = list(feature_set.columns)
+        name = manifest.get("model_family")
+        expected.update(
+            random_forest=RandomForestClassifier, extra_trees=ExtraTreesClassifier
+        )
+        if name == "lightgbm":
+            try:
+                from lightgbm import LGBMClassifier
+            except ImportError:
+                raise DatasetError(
+                    "Install elliptic-fraud[lightgbm] to load LightGBM models."
+                ) from None
+            expected["lightgbm"] = LGBMClassifier
     threshold = manifest.get("threshold")
     if type(threshold) not in (int, float) or not 0 <= threshold <= 1:
         raise DatasetError("Invalid operating threshold in the training manifest.")
 
-    name = manifest.get("winner")
-    expected = {"xgboost": XGBClassifier, "logistic_regression": LogisticRegression}
     if not isinstance(name, str) or name not in expected:
         raise DatasetError("Training manifest specifies an unsupported model.")
     with (model_run / "model.joblib").open("rb") as stream:
@@ -44,12 +88,12 @@ def load_frozen_model(model_run: Path, manifest: dict) -> FrozenModel:
         model = joblib.load(stream)
     if (
         not isinstance(model, Pipeline)
-        or list(getattr(model, "feature_names_in_", [])) != list(FEATURE_AUDIT)
+        or list(getattr(model, "feature_names_in_", [])) != columns
         or list(getattr(model, "classes_", [])) != [0, 1]
         or not isinstance(model.named_steps.get("classifier"), expected[name])
     ):
         raise DatasetError("Incompatible fitted model, predictors or class order.")
-    return FrozenModel(model, name, digest, float(threshold))
+    return FrozenModel(model, name, digest, float(threshold), feature_set)
 
 
 def predict_scores(model: Pipeline, features: pd.DataFrame) -> pd.Series:

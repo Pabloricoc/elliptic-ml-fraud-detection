@@ -27,9 +27,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "httpx2>=2.16,<2.17",
+    "lightgbm>=4.6,<5",
     "pytest>=9,<10",
     "ruff>=0.17,<0.18",
 ]
+lightgbm = ["lightgbm>=4.6,<5"]
 
 [project.scripts]
 elliptic-check-data = "elliptic_fraud.check_data:main"

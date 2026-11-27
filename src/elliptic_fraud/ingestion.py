@@ -110,11 +110,18 @@ def _read_csv(
     return frame
 
 
-def load_scoring_graph(directory: Path) -> EllipticDataset:
-    """Read transaction IDs, time steps and edges without opening the class table."""
-    nodes = _read_csv(directory / FEATURES_FILE, FEATURE_SCHEMA, None, usecols=[0, 1])
+def load_scoring_graph(
+    directory: Path, columns: tuple[str, ...] = ()
+) -> EllipticDataset:
+    """Read a label-free payment graph and any requested anonymous attributes."""
+    if set(columns) - set(FEATURE_COLUMNS):
+        raise DatasetError("Unsupported anonymous feature column.")
+    selected = [0, 1, *(i for i, name in enumerate(FEATURE_SCHEMA) if name in columns)]
+    nodes = _read_csv(directory / FEATURES_FILE, FEATURE_SCHEMA, None, usecols=selected)
     edges = _read_csv(directory / EDGES_FILE, EDGE_SCHEMA, ("txId1", "txId2"))
     validate_graph(nodes, edges)
+    if columns and not np.isfinite(nodes.loc[:, list(columns)].to_numpy()).all():
+        raise DatasetError("Anonymous scoring features must contain finite numbers.")
     nodes["time_step"] = nodes["time_step"].astype(np.uint8)
     return EllipticDataset(nodes, edges)
 

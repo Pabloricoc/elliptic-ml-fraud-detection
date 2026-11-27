@@ -72,6 +72,8 @@ def create_app(model_run: Path | None = None) -> FastAPI:
                 )
             directory = Path(configured)
         manifest = read_json(directory / "manifest.json")
+        if manifest.get("schema_version", 1) != 1:
+            raise DatasetError("The API currently serves only legacy model manifests.")
         app.state.model = load_frozen_model(directory, manifest)
         yield
 
