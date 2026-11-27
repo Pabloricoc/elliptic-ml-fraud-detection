@@ -310,8 +310,8 @@ def run_ablation(
     return report_json
 
 
-def review_cached_ablation(report_path: Path) -> Path:
-    """Regenerate decisions from a verified aggregate and its saved folds."""
+def load_cached_ablation(report_path: Path) -> dict:
+    """Verify the aggregate and saved fold reports without loading a dataset."""
     key = report_path.stem.removeprefix("phase3-")
     if (
         report_path.suffix != ".json"
@@ -398,6 +398,12 @@ def review_cached_ablation(report_path: Path) -> Path:
         )
         if any(computed[field] != arm[field] for field in computed):
             raise DatasetError("Saved arm metrics differ from the cached fold reports.")
+    return summary
+
+
+def review_cached_ablation(report_path: Path) -> Path:
+    """Regenerate decisions from a verified aggregate and its saved folds."""
+    summary = load_cached_ablation(report_path)
     review_path = report_path.with_suffix(".review.md")
     with FileLock(review_path.with_suffix(".lock")):
         temporary = review_path.with_suffix(".partial")
