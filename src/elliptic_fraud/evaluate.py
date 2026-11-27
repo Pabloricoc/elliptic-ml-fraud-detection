@@ -203,6 +203,89 @@ def _assert_legacy_parity(recorded: dict, evaluated: dict, budget: int) -> None:
         )
 
 
+def _required_fields(value: object, location: str, *keys: str) -> dict:
+    if not isinstance(value, dict):
+        raise DatasetError(f"Expected an object at {location}.")
+    for key in keys:
+        if key not in value:
+            raise DatasetError(f"Missing required field {location}.{key}.")
+    return value
+
+
+def _legacy_metadata(manifest: dict, metrics: dict) -> tuple[dict, dict, int, int]:
+    """Preflight metadata required for the replay and its exact parity checks."""
+    _required_fields(
+        manifest,
+        "manifest.json",
+        "dataset",
+        "seed",
+        "review_budget_per_step",
+        "windows_inclusive",
+        "features_in_order",
+        "winner",
+        "threshold",
+        "model_sha256",
+        "label_policy",
+        "availability",
+    )
+    snapshot = _required_fields(
+        manifest["dataset"], "manifest.json.dataset", "files_sha256", "snapshot_sha256"
+    )
+    _required_fields(
+        snapshot["files_sha256"], "manifest.json.dataset.files_sha256", *EXPECTED_FILES
+    )
+    windows = _required_fields(
+        manifest["windows_inclusive"], "manifest.json.windows_inclusive", *WINDOWS
+    )
+    seed, budget = manifest["seed"], manifest["review_budget_per_step"]
+    if (
+        windows != {name: list(bounds) for name, bounds in WINDOWS.items()}
+        or type(seed) is not int
+        or type(budget) is not int
+        or budget < 1
+    ):
+        raise DatasetError(
+            "Legacy evaluation requires the original temporal windows, seed and capacity."
+        )
+    for key in ("label_policy", "availability"):
+        if not isinstance(manifest[key], str) or not manifest[key].strip():
+            raise DatasetError(f"Expected nonempty text at manifest.json.{key}.")
+
+    _required_fields(metrics, "metrics.json", "test")
+    test = _required_fields(
+        metrics["test"],
+        "metrics.json.test",
+        "average_precision",
+        "operating_point",
+        "review_queue",
+    )
+    _required_fields(
+        test["operating_point"],
+        "metrics.json.test.operating_point",
+        "tp",
+        "fp",
+        "fn",
+        "tn",
+        "precision",
+        "recall",
+        "f1",
+    )
+    _required_fields(
+        test["review_queue"],
+        "metrics.json.test.review_queue",
+        "eligible",
+        "labelled",
+        "known_illicit",
+        "reviewed",
+        "confirmed_illicit",
+        "confirmed_licit",
+        "reviewed_unknown",
+        "budget_per_step",
+        "recall_known_illicit",
+    )
+    return snapshot, test, seed, budget
+
+
 def evaluate_legacy(
     model_run: Path,
     data_dir: Path,
@@ -228,35 +311,17 @@ def evaluate_legacy(
         )
     manifest_path = model_run / "manifest.json"
     manifest = read_json(manifest_path)
-    recorded = read_json(model_run / "metrics.json")
-    try:
-        windows = {
-            key: tuple(value) for key, value in manifest["windows_inclusive"].items()
-        }
-        seed, budget = manifest["seed"], manifest["review_budget_per_step"]
-        snapshot = manifest["dataset"]
-    except (KeyError, TypeError, AttributeError):
-        raise DatasetError(
-            "The legacy manifest is missing its evaluation provenance."
-        ) from None
-    if (
-        windows != WINDOWS
-        or type(seed) is not int
-        or type(budget) is not int
-        or budget < 1
-    ):
-        raise DatasetError(
-            "Legacy evaluation requires the original temporal windows, seed and capacity."
-        )
+    snapshot, recorded, seed, budget = _legacy_metadata(
+        manifest, read_json(model_run / "metrics.json")
+    )
     model = load_frozen_model(model_run, manifest)
     paths = [data_dir / name for name in EXPECTED_FILES]
     before = file_state(paths)
     fingerprint = {path.name: file_digest(path) for path in paths}
     snapshot_sha = snapshot_digest(fingerprint)
     if (
-        not isinstance(snapshot, dict)
-        or fingerprint != snapshot.get("files_sha256")
-        or snapshot_sha != snapshot.get("snapshot_sha256")
+        fingerprint != snapshot["files_sha256"]
+        or snapshot_sha != snapshot["snapshot_sha256"]
     ):
         raise DatasetError(
             "Evaluation inputs must match the legacy model's dataset snapshot."
@@ -272,12 +337,7 @@ def evaluate_legacy(
     evaluated = evaluate_window(
         window, scores, seed=seed, threshold=model.threshold, budget=budget
     )
-    _assert_legacy_parity(recorded["test"], evaluated, budget)
-    if prepare_development:
-        from .experiments import cache_development
-
-        development = build_window(dataset, *DEV_STEPS)
-        cache_development(development, snapshot)
+    _assert_legacy_parity(recorded, evaluated, budget)
     with new_run(output_dir, "evaluation") as (staging, destination):
         write_json(
             staging / "evaluation.json",
@@ -301,6 +361,16 @@ def evaluate_legacy(
                 "test": evaluated,
             },
         )
+    if prepare_development:
+        from .experiments import cache_development
+
+        try:
+            development = build_window(dataset, *DEV_STEPS)
+            cache_development(development, snapshot)
+        except (DatasetError, OSError) as error:
+            raise DatasetError(
+                f"Evaluation was published to {destination}. Development cache failed: {error}"
+            ) from error
     return destination
 
 
