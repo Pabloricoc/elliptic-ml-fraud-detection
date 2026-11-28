@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from importlib.metadata import version
 from pathlib import Path
 
+import pandas as pd
 import xgboost
 
 from .explanations import explain_scores, plot_importance
@@ -24,6 +25,16 @@ from .runs import (
     write_json,
 )
 from .schema import EDGES_FILE, FEATURES_FILE, TIME_STEPS, DatasetError
+
+
+def ranked_batch_scores(
+    steps: pd.Series, scores: pd.Series, seed: int, budget: int, threshold: float
+) -> pd.DataFrame:
+    """Apply the batch policy to scores already computed for a window."""
+    ranked = rank_transactions(steps, scores, seed)
+    ranked["above_threshold"] = ranked["risk_score"].ge(threshold)
+    ranked["in_review_queue"] = ranked["review_rank"].le(budget)
+    return ranked
 
 
 def score_batch(
@@ -81,9 +92,7 @@ def score_batch(
     if before != file_state([manifest_path, *paths]):
         raise DatasetError("An input changed during batch ingestion.")
     scores = predict_scores(model, features).astype("float64")
-    ranked = rank_transactions(steps, scores, seed)
-    ranked["above_threshold"] = ranked["risk_score"].ge(threshold)
-    ranked["in_review_queue"] = ranked["review_rank"].le(budget)
+    ranked = ranked_batch_scores(steps, scores, seed, budget, threshold)
 
     contributions, base, residual = explain_scores(model, features, scores)
     units = "probability" if base.name == "base_probability" else "log-odds"

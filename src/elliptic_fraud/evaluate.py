@@ -99,20 +99,24 @@ def evaluate_window(
     seed: int,
     threshold: float,
     budget: int = 50,
+    bootstrap_indices: np.ndarray | None = None,
 ) -> dict:
     """Aggregate fixed-rule metrics. Unknown outcomes enter only the queue and support."""
     target = window.known_target()
     step_ap = per_step_ap(window, scores)
     defined = [ap for ap in step_ap.values() if ap is not None]
-    ap_ci = block_bootstrap_ci(step_ap, draws=BOOTSTRAP_DRAWS, seed=BOOTSTRAP_SEED)
+    bootstrap = {
+        "draws": BOOTSTRAP_DRAWS,
+        "seed": BOOTSTRAP_SEED,
+        "indices": bootstrap_indices,
+    }
+    ap_ci = block_bootstrap_ci(step_ap, **bootstrap)
     labelled_rankings = {}
     for k in LABELLED_CAPACITIES:
         rows = precision_recall_at_k_labelled(window, scores, k, seed)
         precision = {step: row["precision"] for step, row in rows.items()}
         recall = [row["recall"] for row in rows.values() if row["recall"] is not None]
-        precision_ci = block_bootstrap_ci(
-            precision, draws=BOOTSTRAP_DRAWS, seed=BOOTSTRAP_SEED
-        )
+        precision_ci = block_bootstrap_ci(precision, **bootstrap)
         labelled_rankings[k] = {
             "mean_step_precision": precision_ci["estimate"],
             "mean_step_recall": statistics.mean(recall) if recall else None,
