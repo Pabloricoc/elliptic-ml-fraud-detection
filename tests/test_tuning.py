@@ -1,14 +1,17 @@
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 from optuna.trial import create_trial
+from scripts import replay_phase4_rounds
 
 from elliptic_fraud import tuned_models, tuning_runs, tuning_search
 from elliptic_fraud.folds import development_folds, slice_development
 from elliptic_fraud.ingestion import EllipticDataset
 from elliptic_fraud.model_features import build_window
+from elliptic_fraud.runs import snapshot_digest, write_json
 from elliptic_fraud.schema import DatasetError
 from elliptic_fraud.tuned_models import fit_booster, ranks_within_step
 from elliptic_fraud.tuning import TIERS, _limits
@@ -125,3 +128,41 @@ def test_ranks_keep_ties_and_compute_correlations_within_steps() -> None:
     ranks = ranks_within_step(scores, steps)
     assert list(ranks["a"]) == [0.5, 0.5, 1, 1 / 3, 2 / 3, 1]
     assert rank_correlations([scores], [steps])["a / b"] == pytest.approx(0.0)
+
+
+def test_frozen_replay_rejects_a_different_fold_schedule(tmp_path: Path) -> None:
+    def archived_arm(stage: str, embargo: int) -> dict:
+        params = {"weight": "unit", "max_depth": 3}
+        digests = []
+        for fold in development_folds(embargo):
+            config = {
+                "fold": asdict(fold),
+                "params": {**params, "n_estimators": 300},
+                "stage": stage,
+            }
+            digest = snapshot_digest(config)
+            folder = tmp_path / digest
+            folder.mkdir()
+            write_json(folder / "evaluation.json", {"config": config})
+            digests.append(digest)
+        return {
+            "id": snapshot_digest({"folds": digests}),
+            "scenario": "S2",
+            "family": "xgboost",
+            "features": "T1b+T2+T3",
+            "stage": stage,
+            "search_parameters": params,
+            "folds": [{"config_sha256": digest} for digest in digests],
+        }
+
+    base = archived_arm("TPE", 0)
+    nominal = archived_arm("5 seeds", 0)
+    embargoed = archived_arm("5 seeds", 2)
+    archive = {"arms": [base, nominal, embargoed]}
+    assert replay_phase4_rounds._frozen_pair(
+        archive, tmp_path, (base["id"][:10], nominal["id"][:10])
+    ) == (base, nominal)
+    with pytest.raises(DatasetError, match="does not match the frozen replay"):
+        replay_phase4_rounds._frozen_pair(
+            archive, tmp_path, (base["id"][:10], embargoed["id"][:10])
+        )

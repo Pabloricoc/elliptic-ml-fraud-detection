@@ -2,14 +2,16 @@
 
 Development frames: `680aa81f91bfb708de8d8ea01f5eb260e723a0cd59cb7b71cd304526b90c6ca8`.
 Source snapshot: `903ac5dfcabafb86638bbceddef49530bdad2743c6cfe71a7d1c78bf0da9f043`.
-Experiment revision: `8c851e81d19485657d1067f08f6e2f6ab0778606`.
+Reduced-budget experiment revision: `8c851e81d19485657d1067f08f6e2f6ab0778606`.
 Python 3.12.14. numpy 2.3.5, pandas 2.3.3, scikit-learn 1.7.2, scipy 1.16.3, threadpoolctl 3.6.0, joblib 1.5.3, xgboost 3.1.2, lightgbm 4.7.0, optuna 4.9.0.
 
 The experiment reads the verified export of steps 1–39 and the saved Phase 3 reference metrics. All S2 results are **conditional on A1**. S1 uses T0 and a bounded T1 attempt to reduce ties. The API remains on the approved legacy model.
 
-Reproduce from a clean checkout with `elliptic-tune --config configs/phase4-tuning.json --phase3-results artifacts/experiments/phase3-eab31c77964ce9c88e68f29c7df8653ba146c71f0bd4b514fb02b8cbcdd36813.json`. Results resume from local Optuna and fold caches.
+Reproduce the reduced-budget run from a clean checkout with `elliptic-tune --config configs/phase4-tuning.json --phase3-results artifacts/experiments/phase3-eab31c77964ce9c88e68f29c7df8653ba146c71f0bd4b514fb02b8cbcdd36813.json`. Results resume from local Optuna and fold caches.
 
-The plan allows 4 TPE trials per tier and family, at most 8 per family and scenario, and 300 boosting rounds. TPE uses seed 42. Median pruning uses cumulative mean step AP after each fold once two trials complete and two folds have been observed. The family/scenario search stops after 30 attempts without a cumulative +0.003 gain. The optional pairwise ranking objective was outside this budget.
+**Deviation from the audit's full budget.** The audit allowed up to 60 Optuna trials per family and 2,000 boosting rounds. The reduced-budget run used 4 TPE trials per tier and family (8 per family and scenario) and capped boosting at 300 rounds to bound local runtime across all eight studies, four folds and five-seed refits. At 300 rounds, three of the four inner folds for each reviewed booster reached the cap before the 100-round patience could elapse. The follow-up expands the round ceiling for the frozen review arms. The breadth of the hyperparameter search remains limited to the original trials.
+
+TPE uses seed 42. Median pruning uses cumulative mean step AP after each fold once two trials complete and two folds have been observed. The family/scenario search stops after 30 attempts without a cumulative +0.003 gain. The optional pairwise ranking objective was outside this budget.
 
 Each outer fold reserves the final three steps of training to choose the round count by log loss with patience 100. A fresh booster then fits the full outer training window for that count. Class weights use known labels from the rows fitted at each stage. Each best trial is also scored using five seeds (42–46) and the round count chosen by seed 42 in the corresponding fold. The remaining seeds refit only the outer training window.
 
@@ -22,7 +24,7 @@ Optuna attempted **32 trials**, including **26 complete** and **6 pruned**. The 
 | S1 | T0 | xgboost | 0.217357 | 0.241000 | 218.60 | 0/20 |
 | S2 | T1b+T2+T3 | random_forest | 0.924275 | 0.864000 | 2.85 | 17/20 |
 
-## Walk-forward results
+## Reduced-budget walk-forward results
 
 AP is the equally weighted mean across F1–F4 of per-step illicit AP on known labels. The comparison uses the Phase 3 rule with the fixed reference for each scenario. Gains must be positive in at least three folds and exceed one paired SE. Labelled P@50 must meet its floor and mean cutoff ties must be at or below the reference. Within one paired SE, fewer columns are preferred under those same operational constraints. A blend must also pass the rule against its parent. The absolute tie requirement applies at final pre-registration or deployment. S1 candidates must pass it to advance from this phase.
 
@@ -77,14 +79,14 @@ AP is the equally weighted mean across F1–F4 of per-step illicit AP on known l
 | S2 | T1b+T2+T2agg+T3 | xgboost | 1 COMPLETE (4/4), 2 COMPLETE (4/4), 3 COMPLETE (4/4), 4 COMPLETE (4/4) | `7b30fa7154` | 297, 75, 300, 300 |
 | S2 | T1b+T2+T2agg+T3 | lightgbm | 1 COMPLETE (4/4), 2 COMPLETE (4/4), 3 PRUNED (2/4), 4 COMPLETE (4/4) | `960813654a` | 239, 33, 288, 222 |
 
-## Rank averaging
+## Reduced-budget rank averaging
 
 Ranks use average ties and percentiles over all eligible nodes within each step. Pairwise Spearman is averaged over steps with defined correlations. A pair above 0.97 or an undefined average stops the ensemble. If the two boosters pass, the matching Phase 3 forest is replayed on development and checked against its saved fold AP. Rank scores describe a review queue. Their scale is ordinal, so the stored probability-style diagnostics have no calibration interpretation. A within-step rank uses the completed batch and is only a queue diagnostic for S1.
 
 - **S1** stopped at the diversity check. Mean Spearman: xgboost / lightgbm 0.876559, xgboost / random_forest 0.855354, lightgbm / random_forest 0.974028.
 - **S2** evaluated. Mean Spearman: xgboost / lightgbm 0.915039, xgboost / random_forest 0.866816, lightgbm / random_forest 0.833699. The paired rule retained the strongest parent. The rank average had an AP delta of −0.001021 ± 0.001513 SE against that parent.
 
-## Two-step embargo sensitivity
+## Reduced-budget two-step embargo sensitivity
 
 This diagnostic repeats the highest-AP configuration in S1 and the two highest-AP configurations in S2 from the per-study bests. A seed average replaces its parent for this ranking only when it meets the relative rule. The diagnostic recomputes inner stopping with shorter training ranges and keeps the same validation steps. The rank ensemble is outside this sensitivity.
 
@@ -104,10 +106,52 @@ The AP-based schedule above picked both XGBoost arms in S2. The corrected decisi
 
 AP fell in all four folds, and both embargoed XGBoost arms ranked above this LightGBM arm on AP. The absolute tie check still passed. This sensitivity qualifies the g=0 decision for review before pre-registration. The local `phase4-8b708dee294cfe64113fc07ae73c89f7a3c6200a0f4fe7ef8da2b0b20dc3aee1-winner-embargo.json` records the 24 additional verified fold reports and their finished MLflow runs.
 
-## Decisions
+## Reduced-budget decisions
 
 **S1 negative result.** Among the XGBoost and LightGBM arms, the best cutoff count was 5/20 steps (`064716453d`), below the required 18/20. The highest AP was 0.216769, compared with 0.217357 for the legacy T0 XGBoost. The legacy model remains in the API.
 
 **S2 development candidate conditional on A1.** At g=0, LightGBM with T1b+T2+T2agg+T3 and five seeds (`33afc8a2c7`) scored 0.936363 AP, with a gain of 0.012088 ± 0.004076 SE over the default random forest. It exceeded its single-seed parent by 0.002117 ± 0.000700 SE and met the absolute tie check in 20/20 steps. The embargo result above documents the drop in AP under a longer information gap.
 
 The full local aggregate retains trial parameters, per-fold rounds, paired gate outcomes and fold run digests.
+
+## Review replay at a 2,000-round ceiling
+
+The review freezes the hyperparameters from the saved 300-round run and replays the three specified S2 configurations on the same F1–F4 development windows at g=0. Seed 42 uses the same inner log loss and 100-round patience. The four additional seeds refit at its chosen round count. The 543-column single-seed fit is required by its five-seed average and provides the parent comparison. The replay leaves the original Optuna study untouched.
+
+From a clean checkout with the original numerical environment and local Phase 4 results, run the fixed replay script from the project root.
+
+```sh
+python scripts/replay_phase4_rounds.py artifacts/experiments/phase4-8b708dee294cfe64113fc07ae73c89f7a3c6200a0f4fe7ef8da2b0b20dc3aee1.json
+```
+
+The script checks the original fold identities and hyperparameters before loading the verified development export. It saves the aggregate review results in the ignored `*-ceiling-2000.json` alongside the original experiment, with fold reports tracked in local MLflow.
+
+The replay produced **18 fixed configurations** and **72 verified fold reports**. Optuna still contains **26 complete and 6 pruned trials**. The 12 inner fits are counted once because each five-seed average shares the inner fit of seed 42. The stopping callback evaluates up to 100 rounds after the best round, subject to the cap.
+
+| Base configuration | Best rounds at 300 by fold | Best rounds at 2,000 by fold | Inner rounds executed at 2,000 by fold | Inner fits hitting cap at 300 → 2,000 | Best round at 2,000 cap |
+| --- | --- | --- | --- | ---: | ---: |
+| 169 columns · LightGBM (`0e43521507`) | 265, 35, 300, 247 | 338, 35, 465, 340 | 438, 135, 565, 440 | 3/4 → 0/4 | 0/4 |
+| 169 columns · XGBoost (`17e7797a4f`) | 300, 94, 298, 299 | 532, 94, 942, 833 | 632, 194, 1,042, 933 | 3/4 → 0/4 | 0/4 |
+| 543 columns · LightGBM (`960813654a`) | 239, 33, 288, 222 | 239, 33, 475, 222 | 339, 133, 575, 322 | 3/4 → 0/4 | 0/4 |
+
+### Paired development comparisons
+
+The fixed reference is the Phase 3 default Random Forest with AP 0.924275, labelled P@50 of 0.864000 and mean cutoff ties of 2.85. A five-seed arm must also pass the paired rule against its own single-seed fit. All the replayed arms meet the absolute tie gate of at most five cutoff ties in at least 18 of 20 validation steps.
+
+| Replayed S2 arm | Step AP | Δ AP vs RF ± paired SE | Positive folds | Labelled P@50 | Mean ties | Steps with ≤5 ties | Decision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 169 · LightGBM (`7de439deb5`) | 0.933108 | +0.008833 ± 0.003692 | 3/4 | 0.874000 | 1.15 | 20/20 | Passes RF gate |
+| 169 · LightGBM · 5 seeds (`c9a07751a8`) | 0.935226 | +0.010951 ± 0.003261 | 4/4 | 0.877000 | 1.00 | 20/20 | Passes RF and parent gates |
+| 169 · XGBoost (`e746f733fc`) | 0.937529 | +0.013255 ± 0.004803 | 4/4 | 0.879000 | 7.55 | 18/20 | Fails RF tie comparison |
+| 169 · XGBoost · 5 seeds (`4b7e983782`) | 0.937765 | +0.013490 ± 0.004427 | 4/4 | 0.878000 | 1.55 | 19/20 | Passes RF gate, fails parent AP and precision comparisons |
+| 543 · LightGBM parent (`7753740d11`) | 0.934227 | +0.009952 ± 0.004495 | 3/4 | 0.879000 | 1.00 | 20/20 | Passes RF gate |
+| 543 · LightGBM · 5 seeds (`42a3d209d5`) | 0.936694 | +0.012419 ± 0.004177 | 4/4 | 0.880000 | 1.00 | 20/20 | Passes RF and parent gates |
+
+The two LightGBM seed averages improve on their parents by +0.002118 ± 0.001792 SE (169 columns) and +0.002467 ± 0.000398 SE (543 columns). The XGBoost seed average's parent gain is +0.000235 ± 0.000672 SE, and its labelled P@50 falls from 0.879000 to 0.878000.
+
+### Proposed Phase 5 shortlist
+
+- **S2, conditional on A1.** Five-seed LightGBM with `T1b+T2+T3` (169 columns, `c9a07751a8`). Both LightGBM averages clear the fixed RF precision and tie floors. The paired AP difference for 169 minus 543 columns is −0.001468 ± 0.002229 SE, so the 169-column arm takes precedence. The best 543-column arm is within one paired SE and stays outside the shortlist.
+- **S1 reference.** Legacy T0 XGBoost (AP 0.217357 in development). The bounded S1 attempts did not clear the absolute tie requirement. The legacy model remains the API model.
+
+**Embargo limitation.** The two-step embargo was measured at the reduced 300-round budget. The 543-column LightGBM average fell from 0.936363 to 0.906561 AP and kept 20/20 steps within the tie cap. The 169-column LightGBM average proposed here has no matched g=2 result at the reviewed ceiling. The observed sensitivity limits conclusions about robustness to a longer information gap.
