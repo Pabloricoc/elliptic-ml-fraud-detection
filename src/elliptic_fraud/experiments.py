@@ -115,7 +115,9 @@ def _load_development(root: Path) -> tuple[Window, dict]:
     return window, manifest
 
 
-def record_fold_mlflow(output_dir: Path, report: dict) -> str:
+def record_fold_mlflow(
+    output_dir: Path, report: dict, *, experiment_name: str | None = None
+) -> str:
     """Track one aggregate fold report in its scenario's local experiment."""
     # Use a separate SQLite database and aggregate artifacts for development.
     os.environ.setdefault("MLFLOW_DISABLE_TELEMETRY", "true")
@@ -125,7 +127,7 @@ def record_fold_mlflow(output_dir: Path, report: dict) -> str:
     tracking.mkdir(parents=True, exist_ok=True)
     tracking_uri = f"sqlite:///{(tracking / 'mlflow.db').as_posix()}"
     config_hash = report["config_sha256"]
-    name = (
+    name = experiment_name or (
         TRACKING_EXPERIMENT
         if report["config"]["scenario"] == "S1"
         else "Elliptic S2 development"

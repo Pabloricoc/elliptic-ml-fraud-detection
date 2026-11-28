@@ -116,7 +116,11 @@ def tie_mass_at_cut(
 
 
 def block_bootstrap_ci(
-    values: Mapping[int, float | None], *, draws: int = 1000, seed: int = 42
+    values: Mapping[int, float | None],
+    *,
+    draws: int = 1000,
+    seed: int = 42,
+    indices: np.ndarray | None = None,
 ) -> dict[str, int | float | None]:
     """95% percentile interval for a step-macro mean by resampling whole steps."""
     if draws < 1:
@@ -125,7 +129,11 @@ def block_bootstrap_ci(
     defined = blocks[~np.isnan(blocks)]
     if not len(defined):
         return {"estimate": None, "lower": None, "upper": None, "defined_draws": 0}
-    sampled = np.random.default_rng(seed).choice(blocks, size=(draws, len(blocks)))
+    sampled = (
+        np.random.default_rng(seed).choice(blocks, size=(draws, len(blocks)))
+        if indices is None
+        else blocks[indices]
+    )
     counts = np.count_nonzero(~np.isnan(sampled), axis=1)
     estimates = np.nansum(sampled, axis=1)[counts > 0] / counts[counts > 0]
     lower, upper = (
